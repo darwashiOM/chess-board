@@ -171,6 +171,8 @@ def create_app(
         <div>2. Scan to open the setup page.</div>
         <img alt="Board setup page QR code" src="/api/setup-page-qr.svg">
         <div><code>http://10.42.0.1:8000</code></div>
+        <button id="mainScanWifi" type="button">Scan Wi-Fi</button>
+        <div id="wifiSetupNetworks"></div>
         <form id="mainWifiForm">
           <input id="mainWifiSsid" type="text" placeholder="Home Wi-Fi name">
           <input id="mainWifiPassword" type="password" placeholder="Home Wi-Fi password">
@@ -183,6 +185,8 @@ def create_app(
         <h1>Connect Lichess</h1>
         <img alt="Lichess OAuth QR code" src="/api/lichess-token-qr.svg">
         <div>Scan with your phone, approve Lichess, then return here.</div>
+        <div>Phone setup page</div>
+        <img alt="Phone setup page QR code" src="/api/phone-setup-qr.svg">
         <a href="/auth/lichess/start">Connect on this screen</a>
       </div>
     </section>
@@ -474,10 +478,30 @@ def create_app(
         document.getElementById("mainWifiPassword").value = "";
         await refresh();
       });
-      document.getElementById("scanWifi").addEventListener("click", async () => {
+      function selectWifiNetwork(ssid) {
+        document.getElementById("mainWifiSsid").value = ssid;
+        document.getElementById("wifiSsidInput").value = ssid;
+        document.getElementById("mainWifiPassword").focus();
+      }
+      async function scanWifiInto(targetId) {
         const res = await fetch("/api/wifi/scan");
         const networks = await res.json();
-        document.getElementById("wifiNetworks").textContent = networks.map(n => `${n.ssid} (${n.signal}%)`).join(", ") || "none";
+        const target = document.getElementById(targetId);
+        target.innerHTML = "";
+        for (const network of networks) {
+          const button = document.createElement("button");
+          button.type = "button";
+          button.textContent = `${network.ssid} (${network.signal}%)`;
+          button.addEventListener("click", () => selectWifiNetwork(network.ssid));
+          target.appendChild(button);
+        }
+        if (!networks.length) target.textContent = "No networks found";
+      }
+      document.getElementById("scanWifi").addEventListener("click", async () => {
+        await scanWifiInto("wifiNetworks");
+      });
+      document.getElementById("mainScanWifi").addEventListener("click", async () => {
+        await scanWifiInto("wifiSetupNetworks");
       });
       document.getElementById("startHotspot").addEventListener("click", async () => {
         await fetch("/api/wifi/hotspot", {method: "POST"});
@@ -597,6 +621,13 @@ def create_app(
 
     @app.get("/api/setup-page-qr.svg")
     def setup_page_qr():
+        return Response(
+            content=setup_url_qr_svg(wifi_manager.setup_url),
+            media_type="image/svg+xml",
+        )
+
+    @app.get("/api/phone-setup-qr.svg")
+    def phone_setup_qr():
         return Response(
             content=setup_url_qr_svg(wifi_manager.setup_url),
             media_type="image/svg+xml",

@@ -18,6 +18,10 @@ class KioskTest(unittest.TestCase):
         self.assertIn("lichessSetupScreen", html)
         self.assertIn("/api/setup-page-qr.svg", html)
         self.assertIn("Send Wi-Fi To Board", html)
+        self.assertIn("wifiSetupNetworks", html)
+        self.assertIn("selectWifiNetwork", html)
+        self.assertIn("/api/phone-setup-qr.svg", html)
+        self.assertIn("Phone setup page", html)
         self.assertIn('data-tab="play"', html)
         self.assertIn("/api/play/friend", html)
 
