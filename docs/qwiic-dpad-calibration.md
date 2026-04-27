@@ -86,10 +86,10 @@ QWIIC_DPAD = {
 
 ## Keyboard Bridge
 
-The d-pad can drive the kiosk browser through Linux keyboard events:
+The d-pad drives the kiosk browser by posting commands to the local web app:
 
 ```bash
-sudo .venv/bin/python dpad_keyboard.py
+sudo .venv/bin/python dpad_keyboard.py --mode http --url http://127.0.0.1:8000/api/input
 ```
 
 Installed service:
@@ -97,4 +97,10 @@ Installed service:
 ```bash
 sudo systemctl restart chessboard-dpad.service
 journalctl -u chessboard-dpad.service -f
+```
+
+If you need to debug the raw button reads:
+
+```bash
+sudo .venv/bin/python dpad_keyboard.py --debug
 ```

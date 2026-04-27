@@ -2,6 +2,7 @@ from typing import Any
 
 from chessboard_app.config import AppConfigStore
 from chessboard_app.game_session import GameSession
+from chessboard_app.input_queue import InputQueue
 from chessboard_app.leds import DisabledLedController, LedSettings
 from chessboard_app.lichess_client import LichessClient
 from chessboard_app.lichess_oauth import LichessOAuth
@@ -46,6 +47,7 @@ def create_app(
     game_session: GameSession | None = None,
     wifi_manager: WifiManager | None = None,
     led_controller: Any | None = None,
+    input_queue: InputQueue | None = None,
 ):
     try:
         from fastapi import FastAPI, HTTPException, Request
@@ -62,6 +64,7 @@ def create_app(
     game_session = game_session or GameSession()
     wifi_manager = wifi_manager or WifiManager()
     led_controller = led_controller or DisabledLedController()
+    input_queue = input_queue or InputQueue()
     oauth_sessions = {}
     app = FastAPI(title="Lichess Physical Chessboard")
 
@@ -77,6 +80,9 @@ def create_app(
     class WifiConnectRequest(BaseModel):
         ssid: str
         password: str
+
+    class InputRequest(BaseModel):
+        command: str
 
     class GameStateRequest(BaseModel):
         id: str | None = None
@@ -165,12 +171,6 @@ def create_app(
     <section id="wifiSetupScreen" class="setupScreen">
       <div class="setupBox">
         <h1>Set Up Board Wi-Fi</h1>
-        <div>1. Scan to join the board setup network.</div>
-        <img alt="Board setup network QR code" src="/api/setup-qr.svg">
-        <div><code>ChessBoard-Setup</code> / <code>chessboard</code></div>
-        <div>2. Scan to open the setup page.</div>
-        <img alt="Board setup page QR code" src="/api/setup-page-qr.svg">
-        <div><code>http://10.42.0.1:8000</code></div>
         <button id="mainScanWifi" type="button">Scan Wi-Fi</button>
         <div id="wifiSetupNetworks"></div>
         <form id="mainWifiForm">
@@ -282,8 +282,6 @@ def create_app(
             <div class="row"><span>Board setup network</span><code id="setupSsid">ChessBoard-Setup</code></div>
             <div class="row"><span>Setup password</span><code id="setupPassword">chessboard</code></div>
             <div class="row"><span>Setup page</span><code id="setupUrl">http://10.42.0.1:8000</code></div>
-            <img id="setupQr" alt="Board setup network QR code" src="/api/setup-qr.svg" style="width:min(180px,65vw);background:#fff;padding:8px;margin:8px 0;">
-            <img id="setupPageQr" alt="Board setup page QR code" src="/api/setup-page-qr.svg" style="width:min(180px,65vw);background:#fff;padding:8px;margin:8px 0;">
             <form id="wifiForm">
               <div class="field">
                 <label for="wifiSsidInput">SSID</label>
@@ -369,8 +367,6 @@ def create_app(
         document.getElementById("setupSsid").textContent = state.wifi.setupSsid || "ChessBoard-Setup";
         document.getElementById("setupPassword").textContent = state.wifi.setupPassword || "chessboard";
         document.getElementById("setupUrl").textContent = state.wifi.setupUrl || "http://10.42.0.1:8000";
-        document.getElementById("setupQr").style.display = state.wifi.mode === "client" ? "none" : "block";
-        document.getElementById("setupPageQr").style.display = state.wifi.mode === "client" ? "none" : "block";
         document.getElementById("rawSensorDetails").textContent = JSON.stringify(state.sensorDetails, null, 2);
         maybeShowSetupTab(state);
       }
@@ -418,6 +414,28 @@ def create_app(
       function activateRelativeTab(offset) {
         const current = tabOrder.indexOf(activeTabId());
         activateTab(tabOrder[(current + offset + tabOrder.length) % tabOrder.length]);
+      }
+      function handleCommand(command) {
+        document.getElementById("lastKey").textContent = command;
+        if (command === "up") {
+          focusRelative(-1);
+        } else if (command === "down") {
+          focusRelative(1);
+        } else if (command === "left") {
+          window.userSelectedTab = true;
+          activateRelativeTab(-1);
+        } else if (command === "right") {
+          window.userSelectedTab = true;
+          activateRelativeTab(1);
+        } else if (command === "select") {
+          const active = document.activeElement;
+          if (active && typeof active.click === "function") active.click();
+        }
+      }
+      async function pollInput() {
+        const res = await fetch("/api/input");
+        const commands = await res.json();
+        for (const command of commands) handleCommand(command);
       }
       async function refresh() {
         const res = await fetch("/api/state");
@@ -554,23 +572,24 @@ def create_app(
         document.getElementById("lastKey").textContent = event.key;
         if (event.key === "ArrowUp") {
           event.preventDefault();
-          focusRelative(-1);
+          handleCommand("up");
         } else if (event.key === "ArrowDown") {
           event.preventDefault();
-          focusRelative(1);
+          handleCommand("down");
         } else if (event.key === "ArrowLeft") {
           event.preventDefault();
-          window.userSelectedTab = true;
-          activateRelativeTab(-1);
+          handleCommand("left");
         } else if (event.key === "ArrowRight") {
           event.preventDefault();
-          window.userSelectedTab = true;
-          activateRelativeTab(1);
+          handleCommand("right");
+        } else if (event.key === "Enter") {
+          handleCommand("select");
         }
       });
       refresh();
       document.querySelector(".tabButton.active").focus();
       setInterval(refresh, 1000);
+      setInterval(pollInput, 80);
     </script>
   </body>
 </html>
@@ -583,6 +602,18 @@ def create_app(
     @app.get("/api/sensors")
     def api_sensors():
         return sensor_reader.read().as_dict()
+
+    @app.get("/api/input")
+    def get_input():
+        return input_queue.drain()
+
+    @app.post("/api/input")
+    def post_input(payload: InputRequest):
+        try:
+            input_queue.push(payload.command)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        return {"ok": True}
 
     @app.get("/auth/lichess/start")
     def lichess_oauth_start(request: Request):

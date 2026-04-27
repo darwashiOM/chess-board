@@ -8,7 +8,7 @@ Type=simple
 User=root
 WorkingDirectory=/home/pi/Desktop/chess-board
 Environment=PATH=/home/pi/Desktop/chess-board/.venv/bin:/usr/local/bin:/usr/bin:/bin
-ExecStart=/home/pi/Desktop/chess-board/.venv/bin/python /home/pi/Desktop/chess-board/dpad_keyboard.py
+ExecStart=/home/pi/Desktop/chess-board/.venv/bin/python /home/pi/Desktop/chess-board/dpad_keyboard.py --mode http --url http://127.0.0.1:8000/api/input
 Restart=always
 RestartSec=2
 
