@@ -46,6 +46,14 @@ def read_active_sensors(pins):
     }
 
 
+def single_added_sensor(baseline, active):
+    added = active - baseline
+    removed = baseline - active
+    if len(added) == 1 and not removed:
+        return next(iter(added))
+    return None
+
+
 def print_python_map(assignments):
     print()
     print("Paste this into sensor_mapping.py as SENSOR_MAP:")
@@ -56,19 +64,29 @@ def print_python_map(assignments):
     print("}")
 
 
-def wait_for_single_change(pins, baseline, poll_delay):
+def wait_for_no_active_sensors(pins, poll_delay):
     while True:
         time.sleep(poll_delay)
         active = read_active_sensors(pins)
+        if not active:
+            return
+        print(f"Still active: {sorted(active)}. Remove all magnets/pieces.")
+
+
+def wait_for_single_added_sensor(pins, baseline, poll_delay):
+    while True:
+        time.sleep(poll_delay)
+        active = read_active_sensors(pins)
+        chip_pin = single_added_sensor(baseline, active)
+        if chip_pin is not None:
+            return chip_pin
+
         added = sorted(active - baseline)
         removed = sorted(baseline - active)
-        changed = added + removed
-        if len(changed) == 1:
-            return changed[0], active
-        if len(changed) > 1:
-            print(f"Multiple sensors changed: {changed}. Return to baseline and try again.")
-            while read_active_sensors(pins) != baseline:
-                time.sleep(poll_delay)
+        if removed:
+            print(f"Detected removal {removed}; place a magnet on the prompted square.")
+        elif len(added) > 1:
+            print(f"Multiple sensors became active: {added}. Remove extras and try again.")
 
 
 def main():
@@ -87,24 +105,24 @@ def main():
     assignments = {}
 
     print("MCP23017 sensor calibration")
-    print("Remove loose magnets/pieces before starting so the baseline is stable.")
-    print("For each prompted square, place or lift one magnet on that square.")
-    print("The script records the one chip/pin whose state changes.")
-    input("Press Enter when the board is at baseline.")
-
-    baseline = read_active_sensors(pins)
-    print(f"Baseline active sensors: {sorted(baseline)}")
+    print("For each prompted square:")
+    print("1. Make sure the board is empty.")
+    print("2. Place one magnet/piece on that square only.")
+    print("3. Remove it when asked.")
+    input("Press Enter when the board is empty.")
+    wait_for_no_active_sensors(pins, args.poll_delay)
 
     try:
         for square in square_names():
             print()
-            print(f"{square}: change exactly this square now, then wait...")
-            chip_pin, active = wait_for_single_change(pins, baseline, args.poll_delay)
+            print(f"{square}: place one magnet/piece on this square now...")
+            chip_pin = wait_for_single_added_sensor(pins, set(), args.poll_delay)
             assignments[square] = chip_pin
             print(f"{square} -> {chip_pin[0]} pin {chip_pin[1]}")
 
-            baseline = active
-            input("Press Enter after you are ready for the next square.")
+            print("Remove the magnet/piece.")
+            wait_for_no_active_sensors(pins, args.poll_delay)
+            input("Press Enter for the next square.")
 
         print_python_map(assignments)
     except KeyboardInterrupt:
