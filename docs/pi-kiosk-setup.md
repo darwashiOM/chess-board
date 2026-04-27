@@ -65,7 +65,14 @@ SSID: ChessBoard-Setup
 Password: chessboard
 ```
 
-The Wi-Fi tab also shows a QR code for this setup network. Scan it to join the hotspot faster.
+The Wi-Fi setup screen shows two QR codes:
+
+1. Join the board setup network.
+2. Open the board setup page.
+
+This temporary setup network is how the phone can send home Wi-Fi details to the Pi before the Pi knows the home Wi-Fi password.
+
+For iPhones, the install script also enables a small captive portal redirect on the Pi. When the phone joins `ChessBoard-Setup`, iOS should open the setup page even though the setup hotspot has no internet.
 
 Then open:
 
@@ -73,7 +80,7 @@ Then open:
 http://10.42.0.1:8000
 ```
 
-Use the Wi-Fi tab to enter the real home Wi-Fi SSID and password. NetworkManager saves the connection, so the Pi should reconnect after reboot.
+Use the Wi-Fi setup page to enter the real home Wi-Fi SSID and password. The phone sends those values to the Pi, and NetworkManager saves the connection, so the Pi should reconnect after reboot.
 
 ## Lichess Token Setup
 

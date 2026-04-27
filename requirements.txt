@@ -4,4 +4,5 @@ adafruit-circuitpython-mcp230xx
 fastapi
 python-chess
 qrcode
+smbus2
 uvicorn

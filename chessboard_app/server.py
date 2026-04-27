@@ -164,14 +164,17 @@ def create_app(
   <body>
     <section id="wifiSetupScreen" class="setupScreen">
       <div class="setupBox">
-        <h1>Connect Wi-Fi</h1>
-        <img alt="Setup Wi-Fi QR code" src="/api/setup-qr.svg">
-        <div>Scan to join <code>ChessBoard-Setup</code></div>
-        <div>Password: <code>chessboard</code></div>
+        <h1>Set Up Board Wi-Fi</h1>
+        <div>1. Scan to join the board setup network.</div>
+        <img alt="Board setup network QR code" src="/api/setup-qr.svg">
+        <div><code>ChessBoard-Setup</code> / <code>chessboard</code></div>
+        <div>2. Scan to open the setup page.</div>
+        <img alt="Board setup page QR code" src="/api/setup-page-qr.svg">
+        <div><code>http://10.42.0.1:8000</code></div>
         <form id="mainWifiForm">
           <input id="mainWifiSsid" type="text" placeholder="Home Wi-Fi name">
           <input id="mainWifiPassword" type="password" placeholder="Home Wi-Fi password">
-          <button class="primary">Save Wi-Fi</button>
+          <button class="primary">Send Wi-Fi To Board</button>
         </form>
       </div>
     </section>
@@ -271,10 +274,11 @@ def create_app(
             <div class="row"><span>Status</span><code id="wifiStatus">unknown</code></div>
             <div class="row"><span>SSID</span><code id="wifiSsid">none</code></div>
             <div class="row"><span>IP</span><code id="wifiIp">none</code></div>
-            <div class="row"><span>Setup network</span><code id="setupSsid">ChessBoard-Setup</code></div>
+            <div class="row"><span>Board setup network</span><code id="setupSsid">ChessBoard-Setup</code></div>
             <div class="row"><span>Setup password</span><code id="setupPassword">chessboard</code></div>
             <div class="row"><span>Setup page</span><code id="setupUrl">http://10.42.0.1:8000</code></div>
-            <img id="setupQr" alt="Setup Wi-Fi QR code" src="/api/setup-qr.svg" style="width:min(210px,70vw);background:#fff;padding:8px;margin:8px 0;">
+            <img id="setupQr" alt="Board setup network QR code" src="/api/setup-qr.svg" style="width:min(180px,65vw);background:#fff;padding:8px;margin:8px 0;">
+            <img id="setupPageQr" alt="Board setup page QR code" src="/api/setup-page-qr.svg" style="width:min(180px,65vw);background:#fff;padding:8px;margin:8px 0;">
             <form id="wifiForm">
               <div class="field">
                 <label for="wifiSsidInput">SSID</label>
@@ -284,7 +288,7 @@ def create_app(
                 <label for="wifiPassword">Password</label>
                 <input id="wifiPassword" type="password">
               </div>
-              <button class="primary">Connect Wi-Fi</button>
+              <button class="primary">Send Wi-Fi To Board</button>
             </form>
             <button id="scanWifi" type="button">Scan Networks</button>
             <button id="startHotspot" type="button">Start Setup Hotspot</button>
@@ -361,6 +365,7 @@ def create_app(
         document.getElementById("setupPassword").textContent = state.wifi.setupPassword || "chessboard";
         document.getElementById("setupUrl").textContent = state.wifi.setupUrl || "http://10.42.0.1:8000";
         document.getElementById("setupQr").style.display = state.wifi.mode === "client" ? "none" : "block";
+        document.getElementById("setupPageQr").style.display = state.wifi.mode === "client" ? "none" : "block";
         document.getElementById("rawSensorDetails").textContent = JSON.stringify(state.sensorDetails, null, 2);
         maybeShowSetupTab(state);
       }
@@ -585,6 +590,13 @@ def create_app(
     def setup_qr():
         return Response(
             content=setup_wifi_qr_svg(wifi_manager.setup_ssid, wifi_manager.setup_password),
+            media_type="image/svg+xml",
+        )
+
+    @app.get("/api/setup-page-qr.svg")
+    def setup_page_qr():
+        return Response(
+            content=setup_url_qr_svg(wifi_manager.setup_url),
             media_type="image/svg+xml",
         )
 

@@ -16,12 +16,15 @@ class KioskTest(unittest.TestCase):
         self.assertIn("Connect Lichess from phone", html)
         self.assertIn("wifiSetupScreen", html)
         self.assertIn("lichessSetupScreen", html)
+        self.assertIn("/api/setup-page-qr.svg", html)
+        self.assertIn("Send Wi-Fi To Board", html)
         self.assertIn('data-tab="play"', html)
         self.assertIn("/api/play/friend", html)
 
     def test_systemd_services_boot_backend_and_kiosk(self):
         backend = Path("deploy/systemd/chessboard.service").read_text(encoding="utf-8")
         hotspot = Path("deploy/systemd/chessboard-hotspot.service").read_text(encoding="utf-8")
+        portal = Path("deploy/systemd/chessboard-portal.service").read_text(encoding="utf-8")
         kiosk = Path("deploy/systemd/chessboard-kiosk.service").read_text(encoding="utf-8")
 
         self.assertIn("run_server.py --hardware", backend)
@@ -30,6 +33,7 @@ class KioskTest(unittest.TestCase):
         self.assertIn("WantedBy=multi-user.target", backend)
         self.assertIn("ensure_wifi_or_hotspot.py", hotspot)
         self.assertIn("Before=chessboard.service", hotspot)
+        self.assertIn("setup_portal.py", portal)
         self.assertIn("--kiosk", kiosk)
         self.assertIn("/bin/sleep 1", kiosk)
         self.assertIn("http://127.0.0.1:8000", kiosk)
@@ -38,6 +42,8 @@ class KioskTest(unittest.TestCase):
         script = Path("deploy/install_services.sh").read_text(encoding="utf-8")
 
         self.assertIn("pip install -r requirements.txt", script)
+        self.assertIn("dnsmasq-shared.d", script)
+        self.assertIn("chessboard-portal.service", script)
         self.assertIn("systemctl daemon-reload", script)
         self.assertIn("systemctl restart chessboard.service", script)
 
