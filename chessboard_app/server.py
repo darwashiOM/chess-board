@@ -149,9 +149,14 @@ def create_app(
       .primary { background: #769656; color: #111; border: 2px solid #a5c982; font-weight: 800; }
       code { color: #f4d35e; }
       pre { max-height: 160px; overflow: auto; white-space: pre-wrap; font-size: 11px; }
-      .setupScreen { display: none; width: 100vw; height: 100vh; padding: 12px; place-items: center; text-align: center; }
+      .setupScreen { display: none; width: 100vw; height: 100vh; padding: 12px; place-items: center; text-align: center; overflow: auto; }
       .setupBox { max-width: 480px; display: grid; gap: 10px; justify-items: center; }
       .setupBox img { width: min(240px, 72vw, 60vh); background: #fff; padding: 8px; }
+      .networkList { width: 100%; max-height: 26vh; overflow: auto; display: grid; gap: 6px; }
+      .networkList button { width: 100%; text-align: left; }
+      .passwordKeyboard { width: 100%; display: grid; grid-template-columns: repeat(8, 1fr); gap: 5px; }
+      .passwordKeyboard button { min-width: 0; padding: 6px 4px; }
+      .wideKey { grid-column: span 2; }
       body[data-stage="wifi"] #appShell, body[data-stage="lichess"] #appShell { display: none; }
       body[data-stage="wifi"] #wifiSetupScreen { display: grid; }
       body[data-stage="lichess"] #lichessSetupScreen { display: grid; }
@@ -164,6 +169,7 @@ def create_app(
         .grid { width: 39vw; }
         .row { padding: 5px 0; font-size: 13px; }
         button, input, select { min-height: 36px; font-size: 13px; }
+        .passwordKeyboard { grid-template-columns: repeat(6, 1fr); gap: 4px; }
       }
     </style>
   </head>
@@ -171,11 +177,13 @@ def create_app(
     <section id="wifiSetupScreen" class="setupScreen">
       <div class="setupBox">
         <h1>Set Up Board Wi-Fi</h1>
-        <button id="mainScanWifi" type="button">Scan Wi-Fi</button>
-        <div id="wifiSetupNetworks"></div>
+        <button id="mainScanWifi" type="button">Refresh Wi-Fi List</button>
+        <div id="wifiSetupNetworks" class="networkList"></div>
         <form id="mainWifiForm">
-          <input id="mainWifiSsid" type="text" placeholder="Home Wi-Fi name">
+          <input id="mainWifiSsid" type="hidden">
+          <input id="mainWifiSsidDisplay" type="text" placeholder="Select a Wi-Fi network" readonly>
           <input id="mainWifiPassword" type="password" placeholder="Home Wi-Fi password">
+          <div id="passwordKeyboard" class="passwordKeyboard"></div>
           <button class="primary">Send Wi-Fi To Board</button>
         </form>
       </div>
@@ -320,8 +328,13 @@ def create_app(
       const titleEl = document.getElementById("title");
       const tabOrder = ["home", "play", "game", "settings", "wifi", "diagnostics"];
       let latestState = null;
+      let lastStage = "";
+      let wifiScanInFlight = false;
+      let wifiSetupScanned = false;
+      let passwordShift = false;
       function render(state) {
         latestState = state;
+        const previousStage = document.body.dataset.stage || "";
         document.body.dataset.stage = state.wifi.mode !== "client" ? "wifi" : (state.lichess.connected ? "app" : "lichess");
         titleEl.textContent = state.deviceName || "ChessBoard";
         boardEl.innerHTML = "";
@@ -369,6 +382,11 @@ def create_app(
         document.getElementById("setupUrl").textContent = state.wifi.setupUrl || "http://10.42.0.1:8000";
         document.getElementById("rawSensorDetails").textContent = JSON.stringify(state.sensorDetails, null, 2);
         maybeShowSetupTab(state);
+        if (document.body.dataset.stage === "wifi" && !wifiSetupScanned) refreshWifiSetupNetworks();
+        if (previousStage !== document.body.dataset.stage || lastStage !== document.body.dataset.stage) {
+          lastStage = document.body.dataset.stage;
+          focusFirstVisible();
+        }
       }
       function maybeShowSetupTab(state) {
         if (document.body.dataset.stage !== "app") return;
@@ -389,12 +407,20 @@ def create_app(
       function activeTabId() {
         return document.querySelector(".tab.active").id;
       }
+      function activeControlRoot() {
+        if (document.body.dataset.stage === "wifi") return document.getElementById("wifiSetupScreen");
+        if (document.body.dataset.stage === "lichess") return document.getElementById("lichessSetupScreen");
+        return document.querySelector(".tab.active");
+      }
       function visibleControls() {
-        const activeTab = document.querySelector(".tab.active");
-        return [
-          ...document.querySelectorAll(".tabButton"),
-          ...activeTab.querySelectorAll("button, input, select, a")
-        ].filter(el => !el.disabled && el.offsetParent !== null);
+        const root = activeControlRoot();
+        const appTabs = document.body.dataset.stage === "app" ? [...document.querySelectorAll(".tabButton")] : [];
+        const rootControls = root ? [...root.querySelectorAll("button, input, select, a")] : [];
+        return [...appTabs, ...rootControls].filter(el => !el.disabled && el.offsetParent !== null);
+      }
+      function focusFirstVisible() {
+        const controls = visibleControls();
+        if (controls.length) controls[0].focus();
       }
       function focusRelative(offset) {
         const controls = visibleControls();
@@ -416,17 +442,26 @@ def create_app(
         activateTab(tabOrder[(current + offset + tabOrder.length) % tabOrder.length]);
       }
       function handleCommand(command) {
-        document.getElementById("lastKey").textContent = command;
+        const lastKey = document.getElementById("lastKey");
+        if (lastKey) lastKey.textContent = command;
         if (command === "up") {
           focusRelative(-1);
         } else if (command === "down") {
           focusRelative(1);
         } else if (command === "left") {
-          window.userSelectedTab = true;
-          activateRelativeTab(-1);
+          if (document.body.dataset.stage === "app") {
+            window.userSelectedTab = true;
+            activateRelativeTab(-1);
+          } else {
+            focusRelative(-1);
+          }
         } else if (command === "right") {
-          window.userSelectedTab = true;
-          activateRelativeTab(1);
+          if (document.body.dataset.stage === "app") {
+            window.userSelectedTab = true;
+            activateRelativeTab(1);
+          } else {
+            focusRelative(1);
+          }
         } else if (command === "select") {
           const active = document.activeElement;
           if (active && typeof active.click === "function") active.click();
@@ -498,28 +533,94 @@ def create_app(
       });
       function selectWifiNetwork(ssid) {
         document.getElementById("mainWifiSsid").value = ssid;
+        document.getElementById("mainWifiSsidDisplay").value = ssid;
         document.getElementById("wifiSsidInput").value = ssid;
-        document.getElementById("mainWifiPassword").focus();
+        const firstKey = document.querySelector("#passwordKeyboard button");
+        (firstKey || document.getElementById("mainWifiPassword")).focus();
       }
-      async function scanWifiInto(targetId) {
-        const res = await fetch("/api/wifi/scan");
-        const networks = await res.json();
-        const target = document.getElementById(targetId);
-        target.innerHTML = "";
-        for (const network of networks) {
+      function appendPasswordChar(char) {
+        const mainPassword = document.getElementById("mainWifiPassword");
+        const tabPassword = document.getElementById("wifiPassword");
+        mainPassword.value += char;
+        tabPassword.value = mainPassword.value;
+      }
+      function backspacePassword() {
+        const mainPassword = document.getElementById("mainWifiPassword");
+        const tabPassword = document.getElementById("wifiPassword");
+        mainPassword.value = mainPassword.value.slice(0, -1);
+        tabPassword.value = mainPassword.value;
+      }
+      function clearPassword() {
+        document.getElementById("mainWifiPassword").value = "";
+        document.getElementById("wifiPassword").value = "";
+      }
+      function buildPasswordKeyboard() {
+        const target = document.getElementById("passwordKeyboard");
+        const keys = "abcdefghijklmnopqrstuvwxyz0123456789".split("");
+        const extras = ["-", "_", ".", "@", "!", "?", "#", "$", "%", "&"];
+        for (const key of [...keys, ...extras]) {
           const button = document.createElement("button");
           button.type = "button";
-          button.textContent = `${network.ssid} (${network.signal}%)`;
-          button.addEventListener("click", () => selectWifiNetwork(network.ssid));
+          button.textContent = key;
+          button.dataset.key = key;
+          button.addEventListener("click", () => appendPasswordChar(button.textContent));
           target.appendChild(button);
         }
-        if (!networks.length) target.textContent = "No networks found";
+        for (const action of [
+          ["Shift", () => {
+            passwordShift = !passwordShift;
+            updatePasswordKeyboardCase();
+          }],
+          ["Back", backspacePassword],
+          ["Clear", clearPassword],
+        ]) {
+          const button = document.createElement("button");
+          button.type = "button";
+          button.className = "wideKey";
+          button.textContent = action[0];
+          button.addEventListener("click", action[1]);
+          target.appendChild(button);
+        }
+      }
+      function updatePasswordKeyboardCase() {
+        for (const button of document.querySelectorAll("#passwordKeyboard button[data-key]")) {
+          const key = button.dataset.key;
+          button.textContent = key.length === 1 && key >= "a" && key <= "z" && passwordShift ? key.toUpperCase() : key;
+        }
+      }
+      async function scanWifiInto(targetId) {
+        if (wifiScanInFlight) return;
+        wifiScanInFlight = true;
+        const target = document.getElementById(targetId);
+        target.textContent = "Scanning...";
+        try {
+          const res = await fetch("/api/wifi/scan");
+          const networks = await res.json();
+          target.innerHTML = "";
+          for (const network of networks) {
+            const button = document.createElement("button");
+            button.type = "button";
+            button.textContent = `${network.ssid} (${network.signal}%)`;
+            button.addEventListener("click", () => selectWifiNetwork(network.ssid));
+            target.appendChild(button);
+          }
+          if (!networks.length) target.textContent = "No networks found";
+        } catch (error) {
+          target.textContent = "Could not scan Wi-Fi";
+        } finally {
+          wifiScanInFlight = false;
+        }
+      }
+      async function refreshWifiSetupNetworks() {
+        wifiSetupScanned = true;
+        await scanWifiInto("wifiSetupNetworks");
       }
       document.getElementById("scanWifi").addEventListener("click", async () => {
         await scanWifiInto("wifiNetworks");
       });
       document.getElementById("mainScanWifi").addEventListener("click", async () => {
-        await scanWifiInto("wifiSetupNetworks");
+        wifiSetupScanned = false;
+        await refreshWifiSetupNetworks();
       });
       document.getElementById("startHotspot").addEventListener("click", async () => {
         await fetch("/api/wifi/hotspot", {method: "POST"});
@@ -569,7 +670,8 @@ def create_app(
         });
       }
       document.addEventListener("keydown", (event) => {
-        document.getElementById("lastKey").textContent = event.key;
+        const lastKey = document.getElementById("lastKey");
+        if (lastKey) lastKey.textContent = event.key;
         if (event.key === "ArrowUp") {
           event.preventDefault();
           handleCommand("up");
@@ -586,8 +688,9 @@ def create_app(
           handleCommand("select");
         }
       });
+      buildPasswordKeyboard();
       refresh();
-      document.querySelector(".tabButton.active").focus();
+      focusFirstVisible();
       setInterval(refresh, 1000);
       setInterval(pollInput, 80);
     </script>
