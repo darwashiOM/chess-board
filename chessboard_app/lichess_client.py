@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from typing import Any
+from urllib import parse
 from urllib import request as urllib_request
 from urllib.error import HTTPError
 
@@ -8,7 +9,14 @@ from urllib.error import HTTPError
 class UrllibTransport:
     def request(self, method: str, url: str, **kwargs: Any):
         headers = kwargs.get("headers", {})
-        req = urllib_request.Request(url, method=method, headers=headers)
+        body = None
+        if "data" in kwargs:
+            body = parse.urlencode(kwargs["data"]).encode("utf-8")
+            headers = {
+                "Content-Type": "application/x-www-form-urlencoded",
+                **headers,
+            }
+        req = urllib_request.Request(url, data=body, method=method, headers=headers)
         try:
             response = urllib_request.urlopen(req, timeout=kwargs.get("timeout", 10))
         except HTTPError as exc:
@@ -44,11 +52,12 @@ class LichessClient:
             "Accept": "application/json",
         }
 
-    def _request(self, method: str, path: str):
+    def _request(self, method: str, path: str, data: dict[str, Any] | None = None):
         response = self.transport.request(
             method,
             f"{self.base_url}{path}",
             headers=self._headers(),
+            data=data,
             timeout=10,
         )
         if response.status_code == 401:
@@ -83,3 +92,90 @@ class LichessClient:
     def handle_draw(self, game_id: str, accept: bool) -> None:
         answer = "yes" if accept else "no"
         self._request("POST", f"/api/board/game/{game_id}/draw/{answer}")
+
+    def challenge_friend(
+        self,
+        username: str,
+        *,
+        clock_limit: int,
+        increment: int,
+        rated: bool = False,
+        color: str = "random",
+        variant: str = "standard",
+    ) -> dict[str, Any]:
+        response = self._request("POST", f"/api/challenge/{username}", data={
+            "clock.limit": clock_limit,
+            "clock.increment": increment,
+            "rated": _bool(rated),
+            "color": color,
+            "variant": variant,
+        })
+        return response.json()
+
+    def challenge_ai(
+        self,
+        *,
+        level: int,
+        clock_limit: int,
+        increment: int,
+        color: str = "random",
+        variant: str = "standard",
+    ) -> dict[str, Any]:
+        response = self._request("POST", "/api/challenge/ai", data={
+            "level": level,
+            "clock.limit": clock_limit,
+            "clock.increment": increment,
+            "color": color,
+            "variant": variant,
+        })
+        return response.json()
+
+    def create_seek(
+        self,
+        *,
+        time_minutes: int,
+        increment: int,
+        rated: bool = False,
+        color: str = "random",
+        variant: str = "standard",
+    ) -> dict[str, Any]:
+        response = self._request("POST", "/api/board/seek", data={
+            "time": time_minutes,
+            "increment": increment,
+            "rated": _bool(rated),
+            "color": color,
+            "variant": variant,
+        })
+        data = response.json()
+        return data or {"ok": True}
+
+    def open_challenge(
+        self,
+        *,
+        clock_limit: int,
+        increment: int,
+        rated: bool = False,
+        name: str = "ChessBoard",
+        variant: str = "standard",
+    ) -> dict[str, Any]:
+        response = self._request("POST", "/api/challenge/open", data={
+            "clock.limit": clock_limit,
+            "clock.increment": increment,
+            "rated": _bool(rated),
+            "name": name,
+            "variant": variant,
+        })
+        return response.json()
+
+    def next_puzzle(self, difficulty: str | None = None) -> dict[str, Any]:
+        path = "/api/puzzle/next"
+        if difficulty:
+            path = f"{path}?{parse.urlencode({'difficulty': difficulty})}"
+        return self._request("GET", path).json()
+
+    def daily_puzzle(self) -> dict[str, Any]:
+        return self._request("GET", "/api/puzzle/daily").json()
+
+
+def _bool(value: bool) -> str:
+    return "true" if value else "false"

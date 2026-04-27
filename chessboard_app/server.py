@@ -4,6 +4,7 @@ from chessboard_app.config import AppConfigStore
 from chessboard_app.game_session import GameSession
 from chessboard_app.leds import DisabledLedController, LedSettings
 from chessboard_app.lichess_client import LichessClient
+from chessboard_app.lichess_oauth import LichessOAuth
 from chessboard_app.sensors import StaticSensorReader
 from chessboard_app.setup_qr import setup_url_qr_svg, setup_wifi_qr_svg
 from chessboard_app.wifi import WifiManager
@@ -47,8 +48,8 @@ def create_app(
     led_controller: Any | None = None,
 ):
     try:
-        from fastapi import FastAPI, HTTPException
-        from fastapi.responses import HTMLResponse, Response
+        from fastapi import FastAPI, HTTPException, Request
+        from fastapi.responses import HTMLResponse, RedirectResponse, Response
         from pydantic import BaseModel
     except ImportError as exc:
         raise RuntimeError(
@@ -61,6 +62,7 @@ def create_app(
     game_session = game_session or GameSession()
     wifi_manager = wifi_manager or WifiManager()
     led_controller = led_controller or DisabledLedController()
+    oauth_sessions = {}
     app = FastAPI(title="Lichess Physical Chessboard")
 
     class TokenRequest(BaseModel):
@@ -82,6 +84,28 @@ def create_app(
         black: dict[str, Any] | None = None
         state: dict[str, Any] | None = None
 
+    class FriendChallengeRequest(BaseModel):
+        username: str
+        clockLimit: int = 180
+        increment: int = 2
+        rated: bool = False
+        color: str = "random"
+        variant: str = "standard"
+
+    class AiChallengeRequest(BaseModel):
+        level: int = 3
+        clockLimit: int = 180
+        increment: int = 2
+        color: str = "random"
+        variant: str = "standard"
+
+    class SeekRequest(BaseModel):
+        timeMinutes: int = 3
+        increment: int = 2
+        rated: bool = False
+        color: str = "random"
+        variant: str = "standard"
+
     @app.get("/", response_class=HTMLResponse)
     def index():
         return """
@@ -97,7 +121,7 @@ def create_app(
       main { width: 100vw; height: 100vh; padding: 10px; display: grid; grid-template-rows: auto 1fr; gap: 8px; }
       header { display: grid; grid-template-columns: 1fr; gap: 8px; }
       h1 { font-size: clamp(18px, 5vw, 30px); margin: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-      nav { display: grid; grid-template-columns: repeat(5, 1fr); gap: 6px; }
+      nav { display: grid; grid-template-columns: repeat(6, 1fr); gap: 6px; }
       nav button { min-height: 42px; background: #2f2b24; color: #f0ede7; border: 2px solid #5b5548; font-weight: 700; }
       nav button.active { background: #769656; color: #111; border-color: #a5c982; }
       .layout { display: grid; grid-template-columns: minmax(150px, 45vh) 1fr; gap: 10px; align-items: start; min-height: 0; }
@@ -119,10 +143,16 @@ def create_app(
       .primary { background: #769656; color: #111; border: 2px solid #a5c982; font-weight: 800; }
       code { color: #f4d35e; }
       pre { max-height: 160px; overflow: auto; white-space: pre-wrap; font-size: 11px; }
+      .setupScreen { display: none; width: 100vw; height: 100vh; padding: 12px; place-items: center; text-align: center; }
+      .setupBox { max-width: 480px; display: grid; gap: 10px; justify-items: center; }
+      .setupBox img { width: min(240px, 72vw, 60vh); background: #fff; padding: 8px; }
+      body[data-stage="wifi"] #appShell, body[data-stage="lichess"] #appShell { display: none; }
+      body[data-stage="wifi"] #wifiSetupScreen { display: grid; }
+      body[data-stage="lichess"] #lichessSetupScreen { display: grid; }
       @media (max-width: 560px), (max-height: 420px) {
         main { padding: 6px; gap: 6px; }
         h1 { display: none; }
-        nav { grid-template-columns: repeat(5, 1fr); }
+        nav { grid-template-columns: repeat(6, 1fr); }
         nav button { min-height: 36px; padding: 4px; font-size: 12px; }
         .layout { grid-template-columns: 39vw 1fr; gap: 8px; }
         .grid { width: 39vw; }
@@ -132,11 +162,34 @@ def create_app(
     </style>
   </head>
   <body>
+    <section id="wifiSetupScreen" class="setupScreen">
+      <div class="setupBox">
+        <h1>Connect Wi-Fi</h1>
+        <img alt="Setup Wi-Fi QR code" src="/api/setup-qr.svg">
+        <div>Scan to join <code>ChessBoard-Setup</code></div>
+        <div>Password: <code>chessboard</code></div>
+        <form id="mainWifiForm">
+          <input id="mainWifiSsid" type="text" placeholder="Home Wi-Fi name">
+          <input id="mainWifiPassword" type="password" placeholder="Home Wi-Fi password">
+          <button class="primary">Save Wi-Fi</button>
+        </form>
+      </div>
+    </section>
+    <section id="lichessSetupScreen" class="setupScreen">
+      <div class="setupBox">
+        <h1>Connect Lichess</h1>
+        <img alt="Lichess OAuth QR code" src="/api/lichess-token-qr.svg">
+        <div>Scan with your phone, approve Lichess, then return here.</div>
+        <a href="/auth/lichess/start">Connect on this screen</a>
+      </div>
+    </section>
+    <div id="appShell">
     <main>
       <header>
         <h1 id="title">ChessBoard</h1>
         <nav>
           <button class="tabButton active" data-tab="home">Home</button>
+          <button class="tabButton" data-tab="play">Play</button>
           <button class="tabButton" data-tab="game">Game</button>
           <button class="tabButton" data-tab="settings">Settings</button>
           <button class="tabButton" data-tab="wifi">Wi-Fi</button>
@@ -148,7 +201,8 @@ def create_app(
         <section class="panel">
           <div id="home" class="tab active">
             <div id="status">Loading...</div>
-            <p><a id="tokenLink" href="https://lichess.org/account/oauth/token/create?scopes[]=board:play" target="_blank" rel="noreferrer">Create Lichess token with board:play</a></p>
+            <p><a id="oauthLink" href="/auth/lichess/start">Connect Lichess from phone</a></p>
+            <p><a id="tokenLink" href="https://lichess.org/account/oauth/token/create?scopes[]=board:play" target="_blank" rel="noreferrer">Manual token fallback</a></p>
             <img id="lichessQr" alt="Lichess token QR code" src="/api/lichess-token-qr.svg" style="width:min(210px,70vw);background:#fff;padding:8px;margin:8px 0;">
             <form id="tokenForm">
               <div class="field">
@@ -160,6 +214,22 @@ def create_app(
                 <button id="logoutButton" type="button">Disconnect</button>
               </div>
             </form>
+          </div>
+          <div id="play" class="tab">
+            <div class="row"><span>Preset</span><code>3+2</code></div>
+            <div class="field">
+              <label for="friendUsername">Friend username</label>
+              <input id="friendUsername" type="text" placeholder="lichess username">
+            </div>
+            <div class="actions">
+              <button id="challengeFriend" class="primary" type="button">Play Friend 3+2</button>
+              <button id="challengeAi" type="button">Play AI 3+2</button>
+              <button id="seekGame" type="button">Random 3+2</button>
+              <button id="openChallenge" type="button">Friend Link</button>
+              <button id="dailyPuzzle" type="button">Daily Puzzle</button>
+              <button id="nextPuzzle" type="button">Tactics</button>
+            </div>
+            <div id="playStatus"></div>
           </div>
           <div id="game" class="tab">
             <div class="row"><span>Game</span><code id="gameId">none</code></div>
@@ -232,6 +302,7 @@ def create_app(
         </section>
       </div>
     </main>
+    </div>
     <script>
       const squares = [];
       for (let rank = 8; rank >= 1; rank--) {
@@ -240,10 +311,11 @@ def create_app(
       const boardEl = document.getElementById("board");
       const statusEl = document.getElementById("status");
       const titleEl = document.getElementById("title");
-      const tabOrder = ["home", "game", "settings", "wifi", "diagnostics"];
+      const tabOrder = ["home", "play", "game", "settings", "wifi", "diagnostics"];
       let latestState = null;
       function render(state) {
         latestState = state;
+        document.body.dataset.stage = state.wifi.mode !== "client" ? "wifi" : (state.lichess.connected ? "app" : "lichess");
         titleEl.textContent = state.deviceName || "ChessBoard";
         boardEl.innerHTML = "";
         const displaySquares = state.boardOrientation === "black" ? [...squares].reverse() : squares;
@@ -290,6 +362,16 @@ def create_app(
         document.getElementById("setupUrl").textContent = state.wifi.setupUrl || "http://10.42.0.1:8000";
         document.getElementById("setupQr").style.display = state.wifi.mode === "client" ? "none" : "block";
         document.getElementById("rawSensorDetails").textContent = JSON.stringify(state.sensorDetails, null, 2);
+        maybeShowSetupTab(state);
+      }
+      function maybeShowSetupTab(state) {
+        if (document.body.dataset.stage !== "app") return;
+        if (window.userSelectedTab) return;
+        if (state.wifi.mode !== "client") {
+          activateTab("wifi");
+        } else if (!state.lichess.connected) {
+          activateTab("home");
+        }
       }
       function formatClock(ms) {
         if (ms === null || ms === undefined) return "--";
@@ -373,6 +455,19 @@ def create_app(
         document.getElementById("wifiPassword").value = "";
         await refresh();
       });
+      document.getElementById("mainWifiForm").addEventListener("submit", async (event) => {
+        event.preventDefault();
+        await fetch("/api/wifi/connect", {
+          method: "POST",
+          headers: {"Content-Type": "application/json"},
+          body: JSON.stringify({
+            ssid: document.getElementById("mainWifiSsid").value,
+            password: document.getElementById("mainWifiPassword").value
+          })
+        });
+        document.getElementById("mainWifiPassword").value = "";
+        await refresh();
+      });
       document.getElementById("scanWifi").addEventListener("click", async () => {
         const res = await fetch("/api/wifi/scan");
         const networks = await res.json();
@@ -389,8 +484,39 @@ def create_app(
       document.getElementById("resignButton").addEventListener("click", () => gameAction("/api/game/resign"));
       document.getElementById("abortButton").addEventListener("click", () => gameAction("/api/game/abort"));
       document.getElementById("drawButton").addEventListener("click", () => gameAction("/api/game/draw/yes"));
+      async function playAction(path, body) {
+        const res = await fetch(path, {
+          method: "POST",
+          headers: {"Content-Type": "application/json"},
+          body: JSON.stringify(body || {})
+        });
+        const text = await res.text();
+        document.getElementById("playStatus").textContent = res.ok ? text : `Error: ${text}`;
+        await refresh();
+      }
+      document.getElementById("challengeFriend").addEventListener("click", () => playAction("/api/play/friend", {
+        username: document.getElementById("friendUsername").value,
+        clockLimit: 180,
+        increment: 2
+      }));
+      document.getElementById("challengeAi").addEventListener("click", () => playAction("/api/play/ai", {
+        level: 3,
+        clockLimit: 180,
+        increment: 2
+      }));
+      document.getElementById("seekGame").addEventListener("click", () => playAction("/api/play/seek", {
+        timeMinutes: 3,
+        increment: 2
+      }));
+      document.getElementById("openChallenge").addEventListener("click", () => playAction("/api/play/open", {
+        timeMinutes: 3,
+        increment: 2
+      }));
+      document.getElementById("dailyPuzzle").addEventListener("click", () => playAction("/api/puzzles/daily"));
+      document.getElementById("nextPuzzle").addEventListener("click", () => playAction("/api/puzzles/next"));
       for (const button of document.querySelectorAll(".tabButton")) {
         button.addEventListener("click", () => {
+          window.userSelectedTab = true;
           activateTab(button.dataset.tab);
         });
       }
@@ -403,9 +529,11 @@ def create_app(
           focusRelative(1);
         } else if (event.key === "ArrowLeft") {
           event.preventDefault();
+          window.userSelectedTab = true;
           activateRelativeTab(-1);
         } else if (event.key === "ArrowRight") {
           event.preventDefault();
+          window.userSelectedTab = true;
           activateRelativeTab(1);
         }
       });
@@ -425,6 +553,34 @@ def create_app(
     def api_sensors():
         return sensor_reader.read().as_dict()
 
+    @app.get("/auth/lichess/start")
+    def lichess_oauth_start(request: Request):
+        redirect_uri = str(request.url_for("lichess_oauth_callback"))
+        session, url = LichessOAuth().start(redirect_uri)
+        oauth_sessions[session.state] = session
+        return RedirectResponse(url)
+
+    @app.get("/auth/lichess/callback")
+    def lichess_oauth_callback(code: str | None = None, state: str | None = None, error: str | None = None):
+        if error:
+            raise HTTPException(status_code=400, detail=error)
+        if not code or not state or state not in oauth_sessions:
+            raise HTTPException(status_code=400, detail="Invalid Lichess OAuth callback")
+        session = oauth_sessions.pop(state)
+        token = LichessOAuth().finish(session, code)
+        username = LichessClient(token).validate_token()
+        config_store.save_lichess_token(token, username=username)
+        return HTMLResponse("""
+<!doctype html>
+<html>
+  <head><meta name="viewport" content="width=device-width, initial-scale=1"><title>Lichess Connected</title></head>
+  <body style="font-family: system-ui, sans-serif; background:#161512; color:#f0ede7;">
+    <h1>Lichess connected</h1>
+    <p>You can return to the chessboard screen.</p>
+  </body>
+</html>
+""")
+
     @app.get("/api/setup-qr.svg")
     def setup_qr():
         return Response(
@@ -433,9 +589,10 @@ def create_app(
         )
 
     @app.get("/api/lichess-token-qr.svg")
-    def lichess_token_qr():
+    def lichess_token_qr(request: Request):
+        auth_url = str(request.url_for("lichess_oauth_start"))
         return Response(
-            content=setup_url_qr_svg(config_store.public_state()["lichessTokenUrl"]),
+            content=setup_url_qr_svg(auth_url),
             media_type="image/svg+xml",
         )
 
@@ -485,6 +642,63 @@ def create_app(
         if not config.lichess_token:
             raise HTTPException(status_code=401, detail="Lichess is not connected")
         return LichessClient(config.lichess_token).active_games()
+
+    def _lichess_client():
+        config = config_store.load()
+        if not config.lichess_token:
+            raise HTTPException(status_code=401, detail="Lichess is not connected")
+        return LichessClient(config.lichess_token)
+
+    @app.post("/api/play/friend")
+    def play_friend(payload: FriendChallengeRequest):
+        if not payload.username.strip():
+            raise HTTPException(status_code=400, detail="Friend username is required")
+        return _lichess_client().challenge_friend(
+            payload.username.strip(),
+            clock_limit=payload.clockLimit,
+            increment=payload.increment,
+            rated=payload.rated,
+            color=payload.color,
+            variant=payload.variant,
+        )
+
+    @app.post("/api/play/ai")
+    def play_ai(payload: AiChallengeRequest):
+        return _lichess_client().challenge_ai(
+            level=payload.level,
+            clock_limit=payload.clockLimit,
+            increment=payload.increment,
+            color=payload.color,
+            variant=payload.variant,
+        )
+
+    @app.post("/api/play/seek")
+    def play_seek(payload: SeekRequest):
+        return _lichess_client().create_seek(
+            time_minutes=payload.timeMinutes,
+            increment=payload.increment,
+            rated=payload.rated,
+            color=payload.color,
+            variant=payload.variant,
+        )
+
+    @app.post("/api/play/open")
+    def play_open(payload: SeekRequest):
+        return _lichess_client().open_challenge(
+            clock_limit=payload.timeMinutes * 60,
+            increment=payload.increment,
+            rated=payload.rated,
+            name="ChessBoard",
+            variant=payload.variant,
+        )
+
+    @app.post("/api/puzzles/daily")
+    def daily_puzzle():
+        return _lichess_client().daily_puzzle()
+
+    @app.post("/api/puzzles/next")
+    def next_puzzle():
+        return _lichess_client().next_puzzle()
 
     @app.post("/api/game/mock-state")
     def update_mock_game(payload: GameStateRequest):

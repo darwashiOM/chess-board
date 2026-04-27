@@ -11,6 +11,13 @@ class KioskTest(unittest.TestCase):
         self.assertIn("ArrowLeft", html)
         self.assertIn("ArrowRight", html)
         self.assertIn("activateRelativeTab", html)
+        self.assertIn("maybeShowSetupTab", html)
+        self.assertIn("/auth/lichess/start", html)
+        self.assertIn("Connect Lichess from phone", html)
+        self.assertIn("wifiSetupScreen", html)
+        self.assertIn("lichessSetupScreen", html)
+        self.assertIn('data-tab="play"', html)
+        self.assertIn("/api/play/friend", html)
 
     def test_systemd_services_boot_backend_and_kiosk(self):
         backend = Path("deploy/systemd/chessboard.service").read_text(encoding="utf-8")

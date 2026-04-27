@@ -75,6 +75,59 @@ class LichessClientTest(unittest.TestCase):
         self.assertEqual(transport.calls[1][1], "https://lichess.org/api/board/game/game1/abort")
         self.assertEqual(transport.calls[2][1], "https://lichess.org/api/board/game/game1/draw/yes")
 
+    def test_can_create_friend_challenge_with_clock(self):
+        transport = FakeTransport([FakeResponse(data={"challenge": {"id": "c1"}})])
+        client = LichessClient("secret", transport=transport)
+
+        result = client.challenge_friend("friend", clock_limit=180, increment=2, rated=False, color="random")
+
+        self.assertEqual(result, {"challenge": {"id": "c1"}})
+        method, url, kwargs = transport.calls[0]
+        self.assertEqual(method, "POST")
+        self.assertEqual(url, "https://lichess.org/api/challenge/friend")
+        self.assertEqual(kwargs["data"]["clock.limit"], 180)
+        self.assertEqual(kwargs["data"]["clock.increment"], 2)
+        self.assertEqual(kwargs["data"]["rated"], "false")
+
+    def test_can_challenge_ai(self):
+        transport = FakeTransport([FakeResponse(status_code=201, data={"id": "game1"})])
+        client = LichessClient("secret", transport=transport)
+
+        result = client.challenge_ai(level=3, clock_limit=180, increment=2)
+
+        self.assertEqual(result, {"id": "game1"})
+        self.assertEqual(transport.calls[0][1], "https://lichess.org/api/challenge/ai")
+        self.assertEqual(transport.calls[0][2]["data"]["level"], 3)
+
+    def test_can_create_seek(self):
+        transport = FakeTransport([FakeResponse(data={"id": "seek1"})])
+        client = LichessClient("secret", transport=transport)
+
+        result = client.create_seek(time_minutes=3, increment=2, rated=False)
+
+        self.assertEqual(result, {"id": "seek1"})
+        self.assertEqual(transport.calls[0][1], "https://lichess.org/api/board/seek")
+        self.assertEqual(transport.calls[0][2]["data"]["time"], 3)
+
+    def test_can_create_open_challenge(self):
+        transport = FakeTransport([FakeResponse(data={"url": "https://lichess.org/abc"})])
+        client = LichessClient("secret", transport=transport)
+
+        result = client.open_challenge(clock_limit=180, increment=2, name="ChessBoard")
+
+        self.assertEqual(result, {"url": "https://lichess.org/abc"})
+        self.assertEqual(transport.calls[0][1], "https://lichess.org/api/challenge/open")
+        self.assertEqual(transport.calls[0][2]["data"]["name"], "ChessBoard")
+
+    def test_can_fetch_puzzles(self):
+        transport = FakeTransport([FakeResponse(data={"puzzle": {"id": "p1"}}), FakeResponse(data={"puzzle": {"id": "daily"}})])
+        client = LichessClient("secret", transport=transport)
+
+        self.assertEqual(client.next_puzzle(), {"puzzle": {"id": "p1"}})
+        self.assertEqual(client.daily_puzzle(), {"puzzle": {"id": "daily"}})
+        self.assertEqual(transport.calls[0][1], "https://lichess.org/api/puzzle/next")
+        self.assertEqual(transport.calls[1][1], "https://lichess.org/api/puzzle/daily")
+
 
 if __name__ == "__main__":
     unittest.main()
