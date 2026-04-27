@@ -32,16 +32,8 @@ If the executable is `/usr/bin/chromium` instead of `/usr/bin/chromium-browser`,
 
 ```bash
 cd ~/Desktop/chess-board
-sudo cp deploy/systemd/chessboard.service /etc/systemd/system/chessboard.service
-sudo cp deploy/systemd/chessboard-hotspot.service /etc/systemd/system/chessboard-hotspot.service
-sudo cp deploy/systemd/chessboard-kiosk.service /etc/systemd/system/chessboard-kiosk.service
-sudo systemctl daemon-reload
-sudo systemctl enable chessboard-hotspot.service
-sudo systemctl enable chessboard.service
-sudo systemctl enable chessboard-kiosk.service
-sudo systemctl start chessboard-hotspot.service
-sudo systemctl start chessboard.service
-sudo systemctl start chessboard-kiosk.service
+chmod +x deploy/install_services.sh
+./deploy/install_services.sh
 ```
 
 Reboot test:
@@ -149,3 +141,15 @@ Disable kiosk boot:
 ```bash
 sudo systemctl disable chessboard-kiosk.service
 ```
+
+## Updating Code
+
+After pulling new code on the Pi:
+
+```bash
+cd ~/Desktop/chess-board
+git pull
+./deploy/install_services.sh
+```
+
+If only Python files changed, rebooting or restarting `chessboard.service` is enough. If service files or dependencies changed, run the install script.

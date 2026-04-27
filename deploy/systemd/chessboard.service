@@ -1,7 +1,7 @@
 [Unit]
 Description=Physical Lichess Chessboard Backend
-After=network-online.target chessboard-hotspot.service
-Wants=network-online.target chessboard-hotspot.service
+After=NetworkManager.service chessboard-hotspot.service
+Wants=chessboard-hotspot.service
 
 [Service]
 Type=simple

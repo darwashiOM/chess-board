@@ -26,11 +26,20 @@ class KioskTest(unittest.TestCase):
 
         self.assertIn("run_server.py --hardware", backend)
         self.assertIn("--host 0.0.0.0", backend)
+        self.assertNotIn("network-online.target", backend)
         self.assertIn("WantedBy=multi-user.target", backend)
         self.assertIn("ensure_wifi_or_hotspot.py", hotspot)
         self.assertIn("Before=chessboard.service", hotspot)
         self.assertIn("--kiosk", kiosk)
+        self.assertIn("/bin/sleep 1", kiosk)
         self.assertIn("http://127.0.0.1:8000", kiosk)
+
+    def test_install_script_updates_services(self):
+        script = Path("deploy/install_services.sh").read_text(encoding="utf-8")
+
+        self.assertIn("pip install -r requirements.txt", script)
+        self.assertIn("systemctl daemon-reload", script)
+        self.assertIn("systemctl restart chessboard.service", script)
 
 
 if __name__ == "__main__":
