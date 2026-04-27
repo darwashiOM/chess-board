@@ -9,7 +9,7 @@ User=pi
 Environment=DISPLAY=:0
 Environment=XAUTHORITY=/home/pi/.Xauthority
 ExecStartPre=/bin/sleep 1
-ExecStart=/usr/bin/chromium-browser --kiosk --noerrdialogs --disable-infobars --disable-session-crashed-bubble --disable-features=TranslateUI --check-for-update-interval=31536000 http://127.0.0.1:8000
+ExecStart=/usr/bin/chromium-browser --kiosk --start-fullscreen --noerrdialogs --disable-infobars --disable-session-crashed-bubble --disable-features=TranslateUI --check-for-update-interval=31536000 http://127.0.0.1:8000
 Restart=always
 RestartSec=3
 

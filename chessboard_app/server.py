@@ -204,6 +204,7 @@ def create_app(
         <section class="panel">
           <div id="home" class="tab active">
             <div id="status">Loading...</div>
+            <div class="row"><span>Last button</span><code id="lastKey">none</code></div>
             <p><a id="oauthLink" href="/auth/lichess/start">Connect Lichess from phone</a></p>
             <p><a id="tokenLink" href="https://lichess.org/account/oauth/token/create?scopes[]=board:play" target="_blank" rel="noreferrer">Manual token fallback</a></p>
             <img id="lichessQr" alt="Lichess token QR code" src="/api/lichess-token-qr.svg" style="width:min(210px,70vw);background:#fff;padding:8px;margin:8px 0;">
@@ -526,6 +527,7 @@ def create_app(
         });
       }
       document.addEventListener("keydown", (event) => {
+        document.getElementById("lastKey").textContent = event.key;
         if (event.key === "ArrowUp") {
           event.preventDefault();
           focusRelative(-1);
