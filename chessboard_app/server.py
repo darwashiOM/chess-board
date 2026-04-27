@@ -302,10 +302,11 @@ def create_app(
         }).join("")}</div>`;
       }
       function renderGame() {
-        const game = latestState?.game || {clock: {whiteMs: null, blackMs: null}};
-        const sync = latestState?.sync || {matches: false, missing: [], extra: []};
+        const game = latestState && latestState.game ? latestState.game : {clock: {whiteMs: null, blackMs: null}};
+        const clock = game.clock || {whiteMs: null, blackMs: null};
+        const sync = latestState && latestState.sync ? latestState.sync : {matches: false, missing: [], extra: []};
         setHeader("Current Game", sync.matches ? "Synced" : "Fix Board");
-        appEl.innerHTML = `<div class="split">${renderBoard()}<div class="meta"><div>Game: <code>${escapeHtml(game.id || "none")}</code></div><div>Turn: <code>${escapeHtml(game.turn || "white")}</code></div><div>White: <code>${formatClock(game.clock?.whiteMs)}</code></div><div>Black: <code>${formatClock(game.clock?.blackMs)}</code></div><div>Last move: <code>${escapeHtml(game.lastMove || "none")}</code></div><div>Missing: <code>${escapeHtml((sync.missing || []).join(", ") || "none")}</code></div><div>Extra: <code>${escapeHtml((sync.extra || []).join(", ") || "none")}</code></div></div></div>`;
+        appEl.innerHTML = `<div class="split">${renderBoard()}<div class="meta"><div>Game: <code>${escapeHtml(game.id || "none")}</code></div><div>Turn: <code>${escapeHtml(game.turn || "white")}</code></div><div>White: <code>${formatClock(clock.whiteMs)}</code></div><div>Black: <code>${formatClock(clock.blackMs)}</code></div><div>Last move: <code>${escapeHtml(game.lastMove || "none")}</code></div><div>Missing: <code>${escapeHtml((sync.missing || []).join(", ") || "none")}</code></div><div>Extra: <code>${escapeHtml((sync.extra || []).join(", ") || "none")}</code></div></div></div>`;
       }
       function renderSettings() {
         const state = latestState || {};
@@ -322,13 +323,17 @@ def create_app(
       function renderDiagnostics() {
         const state = latestState || {};
         const occupied = squares.filter(square => state.sensors && state.sensors[square]);
+        const wifi = state.wifi || {};
+        const leds = state.leds || {};
+        const sync = state.sync || {missing: [], extra: []};
         setHeader("Diagnostics", "Hardware");
-        appEl.innerHTML = `<div class="split">${renderBoard()}<div class="meta"><div>Wi-Fi: <code>${escapeHtml(state.wifi?.ssid || state.wifi?.mode || "unknown")}</code></div><div>IP: <code>${escapeHtml(state.wifi?.ip || "none")}</code></div><div>Sensors active: <code>${occupied.length}/64</code></div><div>Occupied: <code>${escapeHtml(occupied.join(", ") || "none")}</code></div><div>LEDs: <code>${escapeHtml(state.leds?.mode || "unknown")} ${Math.round((state.leds?.brightness || 0) * 100)}%</code></div><div>Missing: <code>${escapeHtml((state.sync?.missing || []).join(", ") || "none")}</code></div><div>Extra: <code>${escapeHtml((state.sync?.extra || []).join(", ") || "none")}</code></div></div></div>`;
+        appEl.innerHTML = `<div class="split">${renderBoard()}<div class="meta"><div>Wi-Fi: <code>${escapeHtml(wifi.ssid || wifi.mode || "unknown")}</code></div><div>IP: <code>${escapeHtml(wifi.ip || "none")}</code></div><div>Sensors active: <code>${occupied.length}/64</code></div><div>Occupied: <code>${escapeHtml(occupied.join(", ") || "none")}</code></div><div>LEDs: <code>${escapeHtml(leds.mode || "unknown")} ${Math.round((leds.brightness || 0) * 100)}%</code></div><div>Missing: <code>${escapeHtml((sync.missing || []).join(", ") || "none")}</code></div><div>Extra: <code>${escapeHtml((sync.extra || []).join(", ") || "none")}</code></div></div></div>`;
       }
       function renderBoardTest() {
-        const occupied = squares.filter(square => latestState?.sensors && latestState.sensors[square]);
+        const occupied = squares.filter(square => latestState && latestState.sensors && latestState.sensors[square]);
+        const sync = latestState && latestState.sync ? latestState.sync : {missing: [], extra: []};
         setHeader("Board Test", `${occupied.length}/64`);
-        appEl.innerHTML = `<div class="split">${renderBoard()}<div class="meta"><div>Place or remove pieces and watch the board update.</div><div>Active sensors: <code>${occupied.length}</code></div><div>Squares: <code>${escapeHtml(occupied.join(", ") || "none")}</code></div><div>Missing expected: <code>${escapeHtml((latestState?.sync?.missing || []).join(", ") || "none")}</code></div><div>Extra: <code>${escapeHtml((latestState?.sync?.extra || []).join(", ") || "none")}</code></div></div></div>`;
+        appEl.innerHTML = `<div class="split">${renderBoard()}<div class="meta"><div>Place or remove pieces and watch the board update.</div><div>Active sensors: <code>${occupied.length}</code></div><div>Squares: <code>${escapeHtml(occupied.join(", ") || "none")}</code></div><div>Missing expected: <code>${escapeHtml((sync.missing || []).join(", ") || "none")}</code></div><div>Extra: <code>${escapeHtml((sync.extra || []).join(", ") || "none")}</code></div></div></div>`;
       }
       function renderLedTest() {
         const items = [["All Lights", "all"], ["Border Chase", "border"], ["Square Test", "square"], ["Brightness Up", "up"], ["Brightness Down", "down"], ["Back", "back"]];
@@ -342,7 +347,7 @@ def create_app(
         else if (kioskState.screen === "wifiPassword") renderWifiPassword();
         else if (kioskState.screen === "wifiError") renderMenu("Wi-Fi Failed", [["Edit Password", "edit"], ["Choose Different Wi-Fi", "wifi"], ["Refresh Wi-Fi List", "scan"]], "Retry");
         else if (kioskState.screen === "lichessSetup") renderLichessSetup();
-        else if (kioskState.screen === "mainMenu") renderMenu("Chess Board", mainMenu, latestState?.lichess?.username || "Ready");
+        else if (kioskState.screen === "mainMenu") renderMenu("Chess Board", mainMenu, latestState && latestState.lichess && latestState.lichess.username ? latestState.lichess.username : "Ready");
         else if (kioskState.screen === "playMenu") renderMenu("Play", playMenu, "Lichess");
         else if (kioskState.screen === "tactics") renderMenu("Tactics", [["Daily Puzzle", () => playAction("/api/puzzles/daily")], ["Next Puzzle", () => playAction("/api/puzzles/next")], ["Back", "back"]], "Puzzle");
         else if (kioskState.screen === "game") renderGame();
@@ -460,8 +465,8 @@ def create_app(
         if (index === 0) await runLedTest("all", "All Lights");
         else if (index === 1) await runLedTest("border", "Border Chase");
         else if (index === 2) await runLedTest("square", "Square Test");
-        else if (index === 3) await saveSettings({ledsEnabled: true, ledBrightness: Math.min(1, (latestState?.ledBrightness || 0.1) + 0.1)});
-        else if (index === 4) await saveSettings({ledBrightness: Math.max(0.01, (latestState?.ledBrightness || 0.1) - 0.1)});
+        else if (index === 3) await saveSettings({ledsEnabled: true, ledBrightness: Math.min(1, ((latestState && latestState.ledBrightness) || 0.1) + 0.1)});
+        else if (index === 4) await saveSettings({ledBrightness: Math.max(0.01, ((latestState && latestState.ledBrightness) || 0.1) - 0.1)});
         else goBack();
       }
       async function runLedTest(pattern, label) {
@@ -500,15 +505,28 @@ def create_app(
         renderScreen();
       }
       async function pollInput() {
-        const res = await fetch("/api/input");
-        const commands = await res.json();
-        for (const command of commands) handleCommand(command);
+        try {
+          const res = await fetch("/api/input");
+          const commands = await res.json();
+          for (const command of commands) handleCommand(command);
+        } catch (error) {
+          kioskState.lastCommand = "input offline";
+        }
       }
       async function refresh() {
-        const res = await fetch("/api/state");
-        latestState = await res.json();
-        syncStage();
-        renderScreen();
+        try {
+          const res = await fetch("/api/state");
+          if (!res.ok) throw new Error(`state ${res.status}`);
+          latestState = await res.json();
+          syncStage();
+          renderScreen();
+        } catch (error) {
+          renderBootError(error);
+        }
+      }
+      function renderBootError(error) {
+        setHeader("Chess Board", "Backend Error");
+        appEl.innerHTML = `<section class="list"><div class="item selected"><span>Waiting for backend</span><small>retrying</small></div></section><div class="status">${escapeHtml(error && error.message ? error.message : "Could not load /api/state")}</div>`;
       }
       document.addEventListener("keydown", (event) => {
         const keys = {ArrowUp: "up", ArrowDown: "down", ArrowLeft: "left", ArrowRight: "right", Enter: "select"};

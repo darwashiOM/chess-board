@@ -36,6 +36,8 @@ class KioskTest(unittest.TestCase):
         self.assertNotIn('id="mainWifiSsidDisplay" type="text"', html)
         self.assertNotIn("activateRelativeTab", html)
         self.assertNotIn('class="tabButton"', html)
+        self.assertNotIn("?.", html)
+        self.assertIn("renderBootError", html)
         self.assertIn("/api/play/friend", html)
 
     def test_systemd_services_boot_backend_and_kiosk(self):
