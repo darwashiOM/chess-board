@@ -52,6 +52,7 @@ def main():
     parser.add_argument("--bus", type=int, default=1)
     parser.add_argument("--poll-delay", type=float, default=0.05)
     parser.add_argument("--repeat-delay", type=float, default=0.25)
+    parser.add_argument("--debug", action="store_true", help="Print register reads and detected buttons.")
     args = parser.parse_args()
 
     last_pressed = set()
@@ -62,10 +63,15 @@ def main():
         while True:
             registers = read_registers(bus, QWIIC_DPAD)
             pressed = decode_buttons(registers)
+            if args.debug:
+                register_text = " ".join(f"0x{register:02X}=0b{value:08b}" for register, value in sorted(registers.items()))
+                print(f"{register_text} pressed={sorted(pressed)}", flush=True)
             now = time.monotonic()
             for button in sorted(pressed):
                 elapsed = now - last_emit.get(button, 0)
                 if button not in last_pressed or elapsed >= args.repeat_delay:
+                    if args.debug:
+                        print(f"emit {button} -> {key_for_button(button)}", flush=True)
                     emit_key(ui, key_for_button(button))
                     last_emit[button] = now
             last_pressed = pressed
