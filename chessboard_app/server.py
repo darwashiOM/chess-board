@@ -84,6 +84,9 @@ def create_app(
     class InputRequest(BaseModel):
         command: str
 
+    class LedTestRequest(BaseModel):
+        pattern: str
+
     class GameStateRequest(BaseModel):
         id: str | None = None
         white: dict[str, Any] | None = None
@@ -112,6 +115,16 @@ def create_app(
         color: str = "random"
         variant: str = "standard"
 
+    def _phone_base_url() -> str:
+        try:
+            status = wifi_manager.status()
+        except Exception:
+            status = {}
+        ip = status.get("ip") if isinstance(status, dict) else None
+        if ip:
+            return f"http://{ip}:8000"
+        return wifi_manager.setup_url
+
     @app.get("/", response_class=HTMLResponse)
     def index():
         return """
@@ -124,348 +137,367 @@ def create_app(
     <style>
       * { box-sizing: border-box; }
       body { margin: 0; font-family: system-ui, sans-serif; background: #161512; color: #f0ede7; overflow: hidden; }
-      main { width: 100vw; height: 100vh; padding: 10px; display: grid; grid-template-rows: auto 1fr; gap: 8px; }
-      header { display: grid; grid-template-columns: 1fr; gap: 8px; }
-      h1 { font-size: clamp(18px, 5vw, 30px); margin: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-      nav { display: grid; grid-template-columns: repeat(6, 1fr); gap: 6px; }
-      nav button { min-height: 42px; background: #2f2b24; color: #f0ede7; border: 2px solid #5b5548; font-weight: 700; }
-      nav button.active { background: #769656; color: #111; border-color: #a5c982; }
-      .layout { display: grid; grid-template-columns: minmax(150px, 45vh) 1fr; gap: 10px; align-items: start; min-height: 0; }
-      .grid { display: grid; grid-template-columns: repeat(8, minmax(16px, 1fr)); width: min(45vh, 48vw); border: 2px solid #6f6a60; }
-      .sq { aspect-ratio: 1; display: grid; place-items: center; font-weight: 700; }
+      #kioskRoot { width: 100vw; height: 100vh; padding: 10px; display: grid; grid-template-rows: auto 1fr auto; gap: 8px; }
+      header { display: grid; grid-template-columns: 1fr auto; gap: 10px; align-items: center; border-bottom: 1px solid #3f3a31; padding-bottom: 6px; }
+      h1 { font-size: clamp(20px, 5vw, 32px); margin: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+      .pill { color: #f4d35e; font-weight: 800; font-size: 14px; }
+      .screen { min-height: 0; overflow: hidden; display: grid; gap: 8px; align-content: start; }
+      .split { display: grid; grid-template-columns: minmax(128px, 40vh) 1fr; gap: 10px; min-height: 0; }
+      .board { display: grid; grid-template-columns: repeat(8, 1fr); width: min(40vh, 42vw); border: 2px solid #6f6a60; }
+      .sq { aspect-ratio: 1; display: grid; place-items: center; font-size: 10px; font-weight: 800; }
       .light { background: #eeeed2; color: #333; }
       .dark { background: #769656; color: #111; }
-      .piece { width: 42%; height: 42%; border-radius: 50%; background: #1f1f1f; box-shadow: 0 0 0 3px #f8f8f8; }
-      .panel { line-height: 1.35; color: #d8d3c8; min-height: 0; overflow: auto; padding-right: 4px; }
-      .tab { display: none; }
-      .tab.active { display: block; }
-      .field { display: grid; gap: 4px; margin-bottom: 10px; }
-      .row { display: flex; align-items: center; justify-content: space-between; gap: 8px; border-bottom: 1px solid #403b33; padding: 8px 0; }
-      input, select { width: 100%; min-width: 0; min-height: 42px; padding: 8px; background: #f0ede7; border: 0; font-size: 16px; }
-      button { min-height: 42px; padding: 8px 12px; font-size: 15px; }
-      button, input, select, a { outline: none; }
-      button:focus, input:focus, select:focus, a:focus { box-shadow: 0 0 0 4px #f4d35e; }
-      .actions { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
-      .primary { background: #769656; color: #111; border: 2px solid #a5c982; font-weight: 800; }
+      .piece { width: 44%; height: 44%; border-radius: 50%; background: #1f1f1f; box-shadow: 0 0 0 3px #f8f8f8; }
+      .list { display: grid; gap: 6px; max-height: 72vh; overflow: hidden; }
+      .item { min-height: 42px; display: grid; grid-template-columns: 1fr auto; align-items: center; gap: 8px; border: 2px solid #4b453b; background: #26221d; color: #f0ede7; padding: 8px 10px; font-weight: 750; }
+      .item.selected { background: #f4d35e; color: #161512; border-color: #fff0a8; }
+      .item small { opacity: .82; font-weight: 700; }
+      .meta { color: #d8d3c8; line-height: 1.35; display: grid; gap: 5px; }
+      .status { min-height: 24px; color: #f4d35e; font-weight: 800; }
+      .password { font-size: clamp(18px, 5vw, 28px); min-height: 42px; border: 2px solid #5b5548; padding: 7px 10px; background: #221f1a; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+      .keyboard { display: grid; gap: 5px; }
+      .keyRow { display: grid; gap: 5px; }
+      .key { min-height: 38px; border: 2px solid #4b453b; background: #26221d; color: #f0ede7; display: grid; place-items: center; font-weight: 850; }
+      .key.selected { background: #f4d35e; color: #161512; border-color: #fff0a8; }
+      .qrGrid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; align-items: start; }
+      .qrCard { display: grid; gap: 6px; justify-items: center; text-align: center; font-weight: 800; }
+      .qrCard img { width: min(28vw, 150px, 38vh); background: #fff; padding: 6px; }
+      footer { display: grid; grid-template-columns: repeat(5, 1fr); gap: 5px; color: #d8d3c8; font-size: 12px; }
+      footer span { text-align: center; border-top: 1px solid #3f3a31; padding-top: 5px; }
       code { color: #f4d35e; }
-      pre { max-height: 160px; overflow: auto; white-space: pre-wrap; font-size: 11px; }
-      .setupScreen { display: none; width: 100vw; height: 100vh; padding: 12px; place-items: center; text-align: center; overflow: auto; }
-      .setupBox { max-width: 480px; display: grid; gap: 10px; justify-items: center; }
-      .setupBox img { width: min(240px, 72vw, 60vh); background: #fff; padding: 8px; }
-      .networkList { width: 100%; max-height: 26vh; overflow: auto; display: grid; gap: 6px; }
-      .networkList button { width: 100%; text-align: left; }
-      .passwordKeyboard { width: 100%; display: grid; grid-template-columns: repeat(8, 1fr); gap: 5px; }
-      .passwordKeyboard button { min-width: 0; padding: 6px 4px; }
-      .wideKey { grid-column: span 2; }
-      body[data-stage="wifi"] #appShell, body[data-stage="lichess"] #appShell { display: none; }
-      body[data-stage="wifi"] #wifiSetupScreen { display: grid; }
-      body[data-stage="lichess"] #lichessSetupScreen { display: grid; }
       @media (max-width: 560px), (max-height: 420px) {
-        main { padding: 6px; gap: 6px; }
-        h1 { display: none; }
-        nav { grid-template-columns: repeat(6, 1fr); }
-        nav button { min-height: 36px; padding: 4px; font-size: 12px; }
-        .layout { grid-template-columns: 39vw 1fr; gap: 8px; }
-        .grid { width: 39vw; }
-        .row { padding: 5px 0; font-size: 13px; }
-        button, input, select { min-height: 36px; font-size: 13px; }
-        .passwordKeyboard { grid-template-columns: repeat(6, 1fr); gap: 4px; }
+        #kioskRoot { padding: 6px; gap: 5px; }
+        header { padding-bottom: 4px; }
+        h1 { font-size: 18px; }
+        .split { grid-template-columns: 35vw 1fr; gap: 7px; }
+        .board { width: 35vw; }
+        .item { min-height: 34px; padding: 5px 7px; font-size: 13px; }
+        .key { min-height: 31px; font-size: 13px; }
+        .qrCard img { width: min(28vw, 112px, 34vh); }
+        footer { font-size: 10px; }
       }
     </style>
   </head>
-  <body>
-    <section id="wifiSetupScreen" class="setupScreen">
-      <div class="setupBox">
-        <h1>Set Up Board Wi-Fi</h1>
-        <button id="mainScanWifi" type="button">Refresh Wi-Fi List</button>
-        <div id="wifiSetupNetworks" class="networkList"></div>
-        <form id="mainWifiForm">
-          <input id="mainWifiSsid" type="hidden">
-          <input id="mainWifiSsidDisplay" type="text" placeholder="Select a Wi-Fi network" readonly>
-          <input id="mainWifiPassword" type="password" placeholder="Home Wi-Fi password">
-          <div id="passwordKeyboard" class="passwordKeyboard"></div>
-          <button class="primary">Send Wi-Fi To Board</button>
-        </form>
-      </div>
-    </section>
-    <section id="lichessSetupScreen" class="setupScreen">
-      <div class="setupBox">
-        <h1>Connect Lichess</h1>
-        <img alt="Lichess OAuth QR code" src="/api/lichess-token-qr.svg">
-        <div>Scan with your phone, approve Lichess, then return here.</div>
-        <div>Phone setup page</div>
-        <img alt="Phone setup page QR code" src="/api/phone-setup-qr.svg">
-        <a href="/auth/lichess/start">Connect on this screen</a>
-      </div>
-    </section>
-    <div id="appShell">
-    <main>
+  <body data-stage="boot">
+    <div id="kioskRoot">
       <header>
-        <h1 id="title">ChessBoard</h1>
-        <nav>
-          <button class="tabButton active" data-tab="home">Home</button>
-          <button class="tabButton" data-tab="play">Play</button>
-          <button class="tabButton" data-tab="game">Game</button>
-          <button class="tabButton" data-tab="settings">Settings</button>
-          <button class="tabButton" data-tab="wifi">Wi-Fi</button>
-          <button class="tabButton" data-tab="diagnostics">Diagnostics</button>
-        </nav>
+        <h1 id="screenTitle">Chess Board</h1>
+        <div id="screenPill" class="pill">Starting</div>
       </header>
-      <div class="layout">
-        <div id="board" class="grid"></div>
-        <section class="panel">
-          <div id="home" class="tab active">
-            <div id="status">Loading...</div>
-            <div class="row"><span>Last button</span><code id="lastKey">none</code></div>
-            <p><a id="oauthLink" href="/auth/lichess/start">Connect Lichess from phone</a></p>
-            <p><a id="tokenLink" href="https://lichess.org/account/oauth/token/create?scopes[]=board:play" target="_blank" rel="noreferrer">Manual token fallback</a></p>
-            <img id="lichessQr" alt="Lichess token QR code" src="/api/lichess-token-qr.svg" style="width:min(210px,70vw);background:#fff;padding:8px;margin:8px 0;">
-            <form id="tokenForm">
-              <div class="field">
-                <label for="token">Lichess token</label>
-                <input id="token" type="password" placeholder="Token with board:play">
-              </div>
-              <div class="actions">
-                <button class="primary">Connect</button>
-                <button id="logoutButton" type="button">Disconnect</button>
-              </div>
-            </form>
-          </div>
-          <div id="play" class="tab">
-            <div class="row"><span>Preset</span><code>3+2</code></div>
-            <div class="field">
-              <label for="friendUsername">Friend username</label>
-              <input id="friendUsername" type="text" placeholder="lichess username">
-            </div>
-            <div class="actions">
-              <button id="challengeFriend" class="primary" type="button">Play Friend 3+2</button>
-              <button id="challengeAi" type="button">Play AI 3+2</button>
-              <button id="seekGame" type="button">Random 3+2</button>
-              <button id="openChallenge" type="button">Friend Link</button>
-              <button id="dailyPuzzle" type="button">Daily Puzzle</button>
-              <button id="nextPuzzle" type="button">Tactics</button>
-            </div>
-            <div id="playStatus"></div>
-          </div>
-          <div id="game" class="tab">
-            <div class="row"><span>Game</span><code id="gameId">none</code></div>
-            <div class="row"><span>Turn</span><code id="turn">white</code></div>
-            <div class="row"><span>White clock</span><code id="whiteClock">--</code></div>
-            <div class="row"><span>Black clock</span><code id="blackClock">--</code></div>
-            <div class="row"><span>Last move</span><code id="lastMove">none</code></div>
-            <div class="row"><span>Board sync</span><code id="syncStatus">unknown</code></div>
-            <div class="actions">
-              <button id="resignButton" type="button">Resign</button>
-              <button id="abortButton" type="button">Abort</button>
-              <button id="drawButton" type="button">Draw</button>
-            </div>
-          </div>
-          <div id="settings" class="tab">
-            <div class="row">
-              <label for="ledToggle">Lights</label>
-              <input id="ledToggle" type="checkbox">
-            </div>
-            <div class="row">
-              <label for="ledBrightness">Brightness</label>
-              <input id="ledBrightness" type="range" min="0" max="1" step="0.01">
-            </div>
-            <div class="row">
-              <label for="orientation">Board orientation</label>
-              <select id="orientation">
-                <option value="white">White at bottom</option>
-                <option value="black">Black at bottom</option>
-              </select>
-            </div>
-            <div class="row">
-              <label for="deviceName">Device name</label>
-              <input id="deviceName" type="text">
-            </div>
-            <button id="saveSettings" class="primary">Save</button>
-            <div id="settingsStatus"></div>
-          </div>
-          <div id="wifi" class="tab">
-            <div class="row"><span>Status</span><code id="wifiStatus">unknown</code></div>
-            <div class="row"><span>SSID</span><code id="wifiSsid">none</code></div>
-            <div class="row"><span>IP</span><code id="wifiIp">none</code></div>
-            <div class="row"><span>Board setup network</span><code id="setupSsid">ChessBoard-Setup</code></div>
-            <div class="row"><span>Setup password</span><code id="setupPassword">chessboard</code></div>
-            <div class="row"><span>Setup page</span><code id="setupUrl">http://10.42.0.1:8000</code></div>
-            <form id="wifiForm">
-              <div class="field">
-                <label for="wifiSsidInput">SSID</label>
-                <input id="wifiSsidInput" type="text">
-              </div>
-              <div class="field">
-                <label for="wifiPassword">Password</label>
-                <input id="wifiPassword" type="password">
-              </div>
-              <button class="primary">Send Wi-Fi To Board</button>
-            </form>
-            <button id="scanWifi" type="button">Scan Networks</button>
-            <button id="startHotspot" type="button">Start Setup Hotspot</button>
-            <div id="wifiNetworks"></div>
-          </div>
-          <div id="diagnostics" class="tab">
-            <div class="row"><span>Sensors</span><code id="sensorStatus">unknown</code></div>
-            <div class="row"><span>LEDs</span><code id="ledStatus">unknown</code></div>
-            <div class="row"><span>Occupied squares</span><code id="occupiedCount">0</code></div>
-            <div id="occupiedSquares"></div>
-            <div class="row"><span>Missing expected pieces</span><code id="missingSquares">none</code></div>
-            <div class="row"><span>Extra pieces</span><code id="extraSquares">none</code></div>
-            <pre id="rawSensorDetails"></pre>
-          </div>
-        </section>
-      </div>
-    </main>
+      <main id="screen" class="screen"></main>
+      <footer><span>Up</span><span>Down</span><span>Left Back</span><span>Right Open</span><span>Select</span></footer>
     </div>
     <script>
       const squares = [];
-      for (let rank = 8; rank >= 1; rank--) {
-        for (const file of "abcdefgh") squares.push(file + rank);
-      }
-      const boardEl = document.getElementById("board");
-      const statusEl = document.getElementById("status");
-      const titleEl = document.getElementById("title");
-      const tabOrder = ["home", "play", "game", "settings", "wifi", "diagnostics"];
+      for (let rank = 8; rank >= 1; rank--) for (const file of "abcdefgh") squares.push(file + rank);
+      const appEl = document.getElementById("screen");
+      const titleEl = document.getElementById("screenTitle");
+      const pillEl = document.getElementById("screenPill");
+      const PASSWORD_ROWS = [
+        ["a", "b", "c", "d", "e", "f", "g", "h"],
+        ["i", "j", "k", "l", "m", "n", "o", "p"],
+        ["q", "r", "s", "t", "u", "v", "w", "x"],
+        ["y", "z", "0", "1", "2", "3", "4", "5"],
+        ["6", "7", "8", "9", "!", "@", "#", "$"],
+        ["%", "^", "&", "*", "?", "-", "_", "."],
+        ["Shift", "Back", "Clear", "Connect"]
+      ];
+      const kioskState = {
+        screen: "boot",
+        selected: 0,
+        gridRow: 0,
+        gridCol: 0,
+        networks: [],
+        selectedSsid: "",
+        password: "",
+        shift: false,
+        message: "",
+        ledTest: "idle",
+        lastCommand: "none",
+        setupOverride: false
+      };
       let latestState = null;
-      let lastStage = "";
-      let wifiScanInFlight = false;
-      let wifiSetupScanned = false;
-      let passwordShift = false;
-      function render(state) {
-        latestState = state;
-        const previousStage = document.body.dataset.stage || "";
-        document.body.dataset.stage = state.wifi.mode !== "client" ? "wifi" : (state.lichess.connected ? "app" : "lichess");
-        titleEl.textContent = state.deviceName || "ChessBoard";
-        boardEl.innerHTML = "";
-        const displaySquares = state.boardOrientation === "black" ? [...squares].reverse() : squares;
-        for (const square of displaySquares) {
+      let scanInFlight = false;
+      const mainMenu = [
+        ["Play", "playMenu"],
+        ["Current Game", "game"],
+        ["Tactics", "tactics"],
+        ["Settings", "settings"],
+        ["Diagnostics", "diagnostics"],
+        ["Board Test", "boardTest"],
+        ["LED Test", "ledTest"]
+      ];
+      const playMenu = [
+        ["Random 3+2", () => playAction("/api/play/seek", {timeMinutes: 3, increment: 2})],
+        ["Random 5+0", () => playAction("/api/play/seek", {timeMinutes: 5, increment: 0})],
+        ["AI 3+2", () => playAction("/api/play/ai", {level: 3, clockLimit: 180, increment: 2})],
+        ["Friend Link", () => playAction("/api/play/open", {timeMinutes: 3, increment: 2})],
+        ["Daily Puzzle", () => playAction("/api/puzzles/daily")],
+        ["Tactics", () => playAction("/api/puzzles/next")]
+      ];
+      function activeControlRoot() { return appEl; }
+      function stageForState(state) {
+        if (!state) return "boot";
+        if (!state.wifi.connected || !(state.wifi.mode === "client" || state.wifi.mode === "wired")) return "wifi";
+        if (!state.lichess.connected) return "lichess";
+        return "app";
+      }
+      function setScreen(screen) {
+        kioskState.screen = screen;
+        kioskState.selected = 0;
+        kioskState.gridRow = 0;
+        kioskState.gridCol = 0;
+        renderScreen();
+      }
+      function syncStage() {
+        const stage = stageForState(latestState);
+        document.body.dataset.stage = stage;
+        if (stage === "wifi" && !["wifiList", "wifiPassword", "wifiError"].includes(kioskState.screen)) {
+          kioskState.screen = "wifiList";
+          scanWifi();
+        } else if (stage === "lichess" && kioskState.screen !== "lichessSetup") {
+          kioskState.screen = "lichessSetup";
+        } else if (stage === "app" && !kioskState.setupOverride && ["boot", "wifiList", "wifiPassword", "wifiError", "lichessSetup"].includes(kioskState.screen)) {
+          kioskState.screen = "mainMenu";
+        }
+      }
+      function escapeHtml(value) {
+        return String(value).replace(/[&<>"]/g, char => ({"&": "&amp;", "<": "&lt;", ">": "&gt;", "\"": "&quot;"}[char]));
+      }
+      function setHeader(title, pill) {
+        titleEl.textContent = title;
+        pillEl.textContent = pill || kioskState.lastCommand;
+      }
+      function selectedClass(index) { return index === kioskState.selected ? " selected" : ""; }
+      function renderMenu(title, items, subtitle) {
+        setHeader(title, subtitle || "Menu");
+        appEl.innerHTML = `<section class="list">${items.map((item, index) => `<div class="item${selectedClass(index)}"><span>${escapeHtml(item[0])}</span><small>${index === kioskState.selected ? "open" : ""}</small></div>`).join("")}</section><div class="status">${escapeHtml(kioskState.message)}</div>`;
+      }
+      function renderWifiList() {
+        setHeader("Choose Wi-Fi", scanInFlight ? "Scanning" : "Required");
+        const rows = kioskState.networks.map(network => [`${network.ssid}`, `${network.signal || 0}%`]);
+        rows.push(["Refresh Wi-Fi List", "scan"]);
+        appEl.innerHTML = `<section class="list">${rows.map((row, index) => `<div class="item${selectedClass(index)}"><span>${escapeHtml(row[0])}</span><small>${escapeHtml(row[1])}</small></div>`).join("")}</section><div class="status">${escapeHtml(kioskState.message || "Select your network")}</div>`;
+      }
+      function displayKey(key) {
+        return key.length === 1 && key >= "a" && key <= "z" && kioskState.shift ? key.toUpperCase() : key;
+      }
+      function renderWifiPassword() {
+        setHeader(kioskState.selectedSsid || "Wi-Fi Password", "Type");
+        const rows = PASSWORD_ROWS.map((row, rowIndex) => `<div class="keyRow" style="grid-template-columns: repeat(${row.length}, 1fr)">${row.map((key, colIndex) => `<div class="key${rowIndex === kioskState.gridRow && colIndex === kioskState.gridCol ? " selected" : ""}">${escapeHtml(displayKey(key))}</div>`).join("")}</div>`).join("");
+        appEl.innerHTML = `<div class="password">${escapeHtml(kioskState.password.replace(/./g, "*")) || "Password"}</div><section class="keyboard">${rows}</section><div class="status">${escapeHtml(kioskState.message || "Select Connect when done")}</div>`;
+      }
+      function renderLichessSetup() {
+        setHeader("Connect Lichess", "Required");
+        appEl.innerHTML = `<div class="qrGrid"><div class="qrCard"><div>Connect Lichess</div><img alt="Lichess OAuth QR code" src="/api/lichess-token-qr.svg"></div><div class="qrCard"><div>Get API Key</div><img alt="Get API Key QR code" src="/api/lichess-manual-token-qr.svg"></div><div class="qrCard"><div>Enter API Key</div><img alt="Enter API Key QR code" src="/api/phone-setup-qr.svg"></div></div><section class="list"><div class="item${selectedClass(0)}"><span>Check Connection</span><small>refresh</small></div><div class="item${selectedClass(1)}"><span>Open OAuth Here</span><small>/auth</small></div></section><div class="status">Scan on phone. The board continues automatically after token is saved.</div>`;
+      }
+      function renderBoard() {
+        const state = latestState || {};
+        const sensors = state.sensors || {};
+        const orientation = state.boardOrientation === "black" ? [...squares].reverse() : squares;
+        return `<div class="board">${orientation.map(square => {
           const file = square.charCodeAt(0) - 97;
           const rank = Number(square[1]);
-          const el = document.createElement("div");
-          el.className = "sq " + ((file + rank) % 2 ? "light" : "dark");
-          el.title = square;
-          if (state.sensors[square]) {
-            const piece = document.createElement("div");
-            piece.className = "piece";
-            el.appendChild(piece);
-          }
-          boardEl.appendChild(el);
+          return `<div class="sq ${(file + rank) % 2 ? "light" : "dark"}">${sensors[square] ? `<div class="piece"></div>` : ""}</div>`;
+        }).join("")}</div>`;
+      }
+      function renderGame() {
+        const game = latestState?.game || {clock: {whiteMs: null, blackMs: null}};
+        const sync = latestState?.sync || {matches: false, missing: [], extra: []};
+        setHeader("Current Game", sync.matches ? "Synced" : "Fix Board");
+        appEl.innerHTML = `<div class="split">${renderBoard()}<div class="meta"><div>Game: <code>${escapeHtml(game.id || "none")}</code></div><div>Turn: <code>${escapeHtml(game.turn || "white")}</code></div><div>White: <code>${formatClock(game.clock?.whiteMs)}</code></div><div>Black: <code>${formatClock(game.clock?.blackMs)}</code></div><div>Last move: <code>${escapeHtml(game.lastMove || "none")}</code></div><div>Missing: <code>${escapeHtml((sync.missing || []).join(", ") || "none")}</code></div><div>Extra: <code>${escapeHtml((sync.extra || []).join(", ") || "none")}</code></div></div></div>`;
+      }
+      function renderSettings() {
+        const state = latestState || {};
+        const items = [
+          [`Lights ${state.ledsEnabled ? "On" : "Off"}`, "toggle"],
+          [`Brightness ${Math.round((state.ledBrightness || 0.1) * 100)}%`, "brightness"],
+          [`Orientation ${state.boardOrientation || "white"}`, "orientation"],
+          ["Reconnect Wi-Fi", "wifi"],
+          ["Disconnect Lichess", "logout"],
+          ["Back", "back"]
+        ];
+        renderMenu("Settings", items, "Board");
+      }
+      function renderDiagnostics() {
+        const state = latestState || {};
+        const occupied = squares.filter(square => state.sensors && state.sensors[square]);
+        setHeader("Diagnostics", "Hardware");
+        appEl.innerHTML = `<div class="split">${renderBoard()}<div class="meta"><div>Wi-Fi: <code>${escapeHtml(state.wifi?.ssid || state.wifi?.mode || "unknown")}</code></div><div>IP: <code>${escapeHtml(state.wifi?.ip || "none")}</code></div><div>Sensors active: <code>${occupied.length}/64</code></div><div>Occupied: <code>${escapeHtml(occupied.join(", ") || "none")}</code></div><div>LEDs: <code>${escapeHtml(state.leds?.mode || "unknown")} ${Math.round((state.leds?.brightness || 0) * 100)}%</code></div><div>Missing: <code>${escapeHtml((state.sync?.missing || []).join(", ") || "none")}</code></div><div>Extra: <code>${escapeHtml((state.sync?.extra || []).join(", ") || "none")}</code></div></div></div>`;
+      }
+      function renderBoardTest() {
+        const occupied = squares.filter(square => latestState?.sensors && latestState.sensors[square]);
+        setHeader("Board Test", `${occupied.length}/64`);
+        appEl.innerHTML = `<div class="split">${renderBoard()}<div class="meta"><div>Place or remove pieces and watch the board update.</div><div>Active sensors: <code>${occupied.length}</code></div><div>Squares: <code>${escapeHtml(occupied.join(", ") || "none")}</code></div><div>Missing expected: <code>${escapeHtml((latestState?.sync?.missing || []).join(", ") || "none")}</code></div><div>Extra: <code>${escapeHtml((latestState?.sync?.extra || []).join(", ") || "none")}</code></div></div></div>`;
+      }
+      function renderLedTest() {
+        const items = [["All Lights", "all"], ["Border Chase", "border"], ["Square Test", "square"], ["Brightness Up", "up"], ["Brightness Down", "down"], ["Back", "back"]];
+        renderMenu("LED Test", items, kioskState.ledTest);
+      }
+      function renderScreen() {
+        if (kioskState.screen === "boot") {
+          setHeader("Chess Board", "Starting");
+          appEl.innerHTML = `<div class="status">Loading...</div>`;
+        } else if (kioskState.screen === "wifiList") renderWifiList();
+        else if (kioskState.screen === "wifiPassword") renderWifiPassword();
+        else if (kioskState.screen === "wifiError") renderMenu("Wi-Fi Failed", [["Edit Password", "edit"], ["Choose Different Wi-Fi", "wifi"], ["Refresh Wi-Fi List", "scan"]], "Retry");
+        else if (kioskState.screen === "lichessSetup") renderLichessSetup();
+        else if (kioskState.screen === "mainMenu") renderMenu("Chess Board", mainMenu, latestState?.lichess?.username || "Ready");
+        else if (kioskState.screen === "playMenu") renderMenu("Play", playMenu, "Lichess");
+        else if (kioskState.screen === "tactics") renderMenu("Tactics", [["Daily Puzzle", () => playAction("/api/puzzles/daily")], ["Next Puzzle", () => playAction("/api/puzzles/next")], ["Back", "back"]], "Puzzle");
+        else if (kioskState.screen === "game") renderGame();
+        else if (kioskState.screen === "settings") renderSettings();
+        else if (kioskState.screen === "diagnostics") renderDiagnostics();
+        else if (kioskState.screen === "boardTest") renderBoardTest();
+        else if (kioskState.screen === "ledTest") renderLedTest();
+      }
+      function listLength() {
+        if (kioskState.screen === "wifiList") return kioskState.networks.length + 1;
+        if (kioskState.screen === "lichessSetup") return 2;
+        if (kioskState.screen === "mainMenu") return mainMenu.length;
+        if (kioskState.screen === "playMenu") return playMenu.length;
+        if (kioskState.screen === "tactics") return 3;
+        if (kioskState.screen === "settings") return 6;
+        if (kioskState.screen === "ledTest") return 6;
+        if (kioskState.screen === "wifiError") return 3;
+        return 0;
+      }
+      function moveSelection(delta) {
+        const length = listLength();
+        if (!length) return;
+        kioskState.selected = (kioskState.selected + delta + length) % length;
+      }
+      function moveKeyboard(rowDelta, colDelta) {
+        kioskState.gridRow = (kioskState.gridRow + rowDelta + PASSWORD_ROWS.length) % PASSWORD_ROWS.length;
+        const row = PASSWORD_ROWS[kioskState.gridRow];
+        kioskState.gridCol = Math.min((kioskState.gridCol + colDelta + row.length) % row.length, row.length - 1);
+      }
+      function goBack() {
+        if (kioskState.screen === "wifiList" && kioskState.setupOverride) {
+          kioskState.setupOverride = false;
+          setScreen("mainMenu");
+        } else if (kioskState.screen === "wifiPassword" || kioskState.screen === "wifiError") setScreen("wifiList");
+        else if (["playMenu", "game", "tactics", "settings", "diagnostics", "boardTest", "ledTest"].includes(kioskState.screen)) setScreen("mainMenu");
+      }
+      async function activateSelected() {
+        if (kioskState.screen === "wifiList") {
+          if (kioskState.selected >= kioskState.networks.length) return scanWifi();
+          kioskState.selectedSsid = kioskState.networks[kioskState.selected].ssid;
+          kioskState.password = "";
+          setScreen("wifiPassword");
+        } else if (kioskState.screen === "wifiPassword") {
+          pressPasswordKey(PASSWORD_ROWS[kioskState.gridRow][kioskState.gridCol]);
+        } else if (kioskState.screen === "wifiError") {
+          if (kioskState.selected === 0) setScreen("wifiPassword");
+          else if (kioskState.selected === 1) setScreen("wifiList");
+          else scanWifi();
+        } else if (kioskState.screen === "lichessSetup") {
+          if (kioskState.selected === 0) await refresh();
+          else window.location.href = "/auth/lichess/start";
+        } else if (kioskState.screen === "mainMenu") {
+          setScreen(mainMenu[kioskState.selected][1]);
+        } else if (kioskState.screen === "playMenu") {
+          await playMenu[kioskState.selected][1]();
+        } else if (kioskState.screen === "tactics") {
+          if (kioskState.selected === 0) await playAction("/api/puzzles/daily");
+          else if (kioskState.selected === 1) await playAction("/api/puzzles/next");
+          else goBack();
+        } else if (kioskState.screen === "settings") {
+          await settingsAction(kioskState.selected);
+        } else if (kioskState.screen === "ledTest") {
+          await ledTestAction(kioskState.selected);
         }
-        statusEl.textContent = state.lichess.connected
-          ? `Connected to Lichess as ${state.lichess.username || "unknown"}`
-          : "Lichess not connected";
-        document.getElementById("tokenLink").href = state.lichessTokenUrl;
-        document.getElementById("lichessQr").style.display = state.lichess.connected ? "none" : "block";
-        document.getElementById("ledToggle").checked = Boolean(state.ledsEnabled);
-        document.getElementById("ledBrightness").value = state.ledBrightness || 0.1;
-        document.getElementById("orientation").value = state.boardOrientation || "white";
-        document.getElementById("deviceName").value = state.deviceName || "ChessBoard";
-        document.getElementById("sensorStatus").textContent = state.hardware.sensors;
-        document.getElementById("ledStatus").textContent = `${state.leds.mode} ${Math.round(state.leds.brightness * 100)}%`;
-        const occupied = squares.filter(square => state.sensors[square]);
-        document.getElementById("occupiedCount").textContent = String(occupied.length);
-        document.getElementById("occupiedSquares").textContent = occupied.join(", ") || "none";
-        document.getElementById("gameId").textContent = state.game.id || "none";
-        document.getElementById("turn").textContent = state.game.turn;
-        document.getElementById("whiteClock").textContent = formatClock(state.game.clock.whiteMs);
-        document.getElementById("blackClock").textContent = formatClock(state.game.clock.blackMs);
-        document.getElementById("lastMove").textContent = state.game.lastMove || "none";
-        document.getElementById("syncStatus").textContent = state.sync.matches ? "synced" : "fix board";
-        document.getElementById("missingSquares").textContent = state.sync.missing.join(", ") || "none";
-        document.getElementById("extraSquares").textContent = state.sync.extra.join(", ") || "none";
-        document.getElementById("wifiStatus").textContent = state.wifi.connected ? "connected" : (state.wifi.available ? "not connected" : "unavailable");
-        document.getElementById("wifiSsid").textContent = state.wifi.ssid || "none";
-        document.getElementById("wifiIp").textContent = state.wifi.ip || "none";
-        document.getElementById("setupSsid").textContent = state.wifi.setupSsid || "ChessBoard-Setup";
-        document.getElementById("setupPassword").textContent = state.wifi.setupPassword || "chessboard";
-        document.getElementById("setupUrl").textContent = state.wifi.setupUrl || "http://10.42.0.1:8000";
-        document.getElementById("rawSensorDetails").textContent = JSON.stringify(state.sensorDetails, null, 2);
-        maybeShowSetupTab(state);
-        if (document.body.dataset.stage === "wifi" && !wifiSetupScanned) refreshWifiSetupNetworks();
-        if (previousStage !== document.body.dataset.stage || lastStage !== document.body.dataset.stage) {
-          lastStage = document.body.dataset.stage;
-          focusFirstVisible();
+        renderScreen();
+      }
+      async function pressPasswordKey(key) {
+        if (key === "Shift") kioskState.shift = !kioskState.shift;
+        else if (key === "Back") kioskState.password = kioskState.password.slice(0, -1);
+        else if (key === "Clear") kioskState.password = "";
+        else if (key === "Connect") await connectWifi();
+        else kioskState.password += displayKey(key);
+      }
+      async function connectWifi() {
+        kioskState.message = `Connecting to ${kioskState.selectedSsid}...`;
+        renderScreen();
+        const res = await fetch("/api/wifi/connect", {method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify({ssid: kioskState.selectedSsid, password: kioskState.password})});
+        if (!res.ok) {
+          kioskState.message = "Could not connect. Check password.";
+          setScreen("wifiError");
+          return;
+        }
+        kioskState.message = "Connected";
+        kioskState.setupOverride = false;
+        await refresh();
+      }
+      async function scanWifi() {
+        if (scanInFlight) return;
+        scanInFlight = true;
+        kioskState.message = "Scanning Wi-Fi...";
+        renderScreen();
+        try {
+          const res = await fetch("/api/wifi/scan");
+          kioskState.networks = res.ok ? await res.json() : [];
+          kioskState.message = kioskState.networks.length ? "Select your network" : "No networks found";
+        } catch (error) {
+          kioskState.networks = [];
+          kioskState.message = "Could not scan Wi-Fi";
+        } finally {
+          scanInFlight = false;
+          kioskState.selected = 0;
+          renderScreen();
         }
       }
-      function maybeShowSetupTab(state) {
-        if (document.body.dataset.stage !== "app") return;
-        if (window.userSelectedTab) return;
-        if (state.wifi.mode !== "client") {
-          activateTab("wifi");
-        } else if (!state.lichess.connected) {
-          activateTab("home");
-        }
+      async function settingsAction(index) {
+        const state = latestState || {};
+        if (index === 0) await saveSettings({ledsEnabled: !state.ledsEnabled});
+        else if (index === 1) await saveSettings({ledBrightness: Math.min(1, ((state.ledBrightness || 0.1) + 0.1))});
+        else if (index === 2) await saveSettings({boardOrientation: state.boardOrientation === "black" ? "white" : "black"});
+        else if (index === 3) { kioskState.setupOverride = true; kioskState.networks = []; setScreen("wifiList"); await scanWifi(); }
+        else if (index === 4) { await fetch("/api/lichess/logout", {method: "POST"}); await refresh(); }
+        else goBack();
+      }
+      async function ledTestAction(index) {
+        if (index === 0) await runLedTest("all", "All Lights");
+        else if (index === 1) await runLedTest("border", "Border Chase");
+        else if (index === 2) await runLedTest("square", "Square Test");
+        else if (index === 3) await saveSettings({ledsEnabled: true, ledBrightness: Math.min(1, (latestState?.ledBrightness || 0.1) + 0.1)});
+        else if (index === 4) await saveSettings({ledBrightness: Math.max(0.01, (latestState?.ledBrightness || 0.1) - 0.1)});
+        else goBack();
+      }
+      async function runLedTest(pattern, label) {
+        const res = await fetch("/api/led/test", {method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify({pattern})});
+        kioskState.ledTest = res.ok ? label : "LED test unavailable";
+        await refresh();
+      }
+      async function saveSettings(body) {
+        await fetch("/api/settings", {method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify(body)});
+        await refresh();
+      }
+      async function playAction(path, body) {
+        const res = await fetch(path, {method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify(body || {})});
+        kioskState.message = res.ok ? "Sent to Lichess" : `Error: ${await res.text()}`;
+        await refresh();
       }
       function formatClock(ms) {
         if (ms === null || ms === undefined) return "--";
         const total = Math.max(0, Math.floor(ms / 1000));
-        const minutes = Math.floor(total / 60);
-        const seconds = total % 60;
-        return `${minutes}:${String(seconds).padStart(2, "0")}`;
-      }
-      function activeTabId() {
-        return document.querySelector(".tab.active").id;
-      }
-      function activeControlRoot() {
-        if (document.body.dataset.stage === "wifi") return document.getElementById("wifiSetupScreen");
-        if (document.body.dataset.stage === "lichess") return document.getElementById("lichessSetupScreen");
-        return document.querySelector(".tab.active");
-      }
-      function visibleControls() {
-        const root = activeControlRoot();
-        const appTabs = document.body.dataset.stage === "app" ? [...document.querySelectorAll(".tabButton")] : [];
-        const rootControls = root ? [...root.querySelectorAll("button, input, select, a")] : [];
-        return [...appTabs, ...rootControls].filter(el => !el.disabled && el.offsetParent !== null);
-      }
-      function focusFirstVisible() {
-        const controls = visibleControls();
-        if (controls.length) controls[0].focus();
-      }
-      function focusRelative(offset) {
-        const controls = visibleControls();
-        if (!controls.length) return;
-        const index = Math.max(0, controls.indexOf(document.activeElement));
-        controls[(index + offset + controls.length) % controls.length].focus();
-      }
-      function activateTab(tabId) {
-        const button = document.querySelector(`[data-tab="${tabId}"]`);
-        if (!button) return;
-        for (const item of document.querySelectorAll(".tabButton, .tab")) item.classList.remove("active");
-        button.classList.add("active");
-        document.getElementById(tabId).classList.add("active");
-        if (latestState) render(latestState);
-        button.focus();
-      }
-      function activateRelativeTab(offset) {
-        const current = tabOrder.indexOf(activeTabId());
-        activateTab(tabOrder[(current + offset + tabOrder.length) % tabOrder.length]);
+        return `${Math.floor(total / 60)}:${String(total % 60).padStart(2, "0")}`;
       }
       function handleCommand(command) {
-        const lastKey = document.getElementById("lastKey");
-        if (lastKey) lastKey.textContent = command;
-        if (command === "up") {
-          focusRelative(-1);
-        } else if (command === "down") {
-          focusRelative(1);
-        } else if (command === "left") {
-          if (document.body.dataset.stage === "app") {
-            window.userSelectedTab = true;
-            activateRelativeTab(-1);
-          } else {
-            focusRelative(-1);
-          }
-        } else if (command === "right") {
-          if (document.body.dataset.stage === "app") {
-            window.userSelectedTab = true;
-            activateRelativeTab(1);
-          } else {
-            focusRelative(1);
-          }
-        } else if (command === "select") {
-          const active = document.activeElement;
-          if (active && typeof active.click === "function") active.click();
+        kioskState.lastCommand = command;
+        if (kioskState.screen === "wifiPassword") {
+          if (command === "up") moveKeyboard(-1, 0);
+          else if (command === "down") moveKeyboard(1, 0);
+          else if (command === "left") moveKeyboard(0, -1);
+          else if (command === "right") moveKeyboard(0, 1);
+          else if (command === "select") activateSelected();
+        } else {
+          if (command === "up") moveSelection(-1);
+          else if (command === "down") moveSelection(1);
+          else if (command === "left") goBack();
+          else if (command === "right" || command === "select") activateSelected();
         }
+        renderScreen();
       }
       async function pollInput() {
         const res = await fetch("/api/input");
@@ -474,223 +506,18 @@ def create_app(
       }
       async function refresh() {
         const res = await fetch("/api/state");
-        render(await res.json());
-      }
-      document.getElementById("tokenForm").addEventListener("submit", async (event) => {
-        event.preventDefault();
-        const token = document.getElementById("token").value;
-        await fetch("/api/lichess/token", {
-          method: "POST",
-          headers: {"Content-Type": "application/json"},
-          body: JSON.stringify({token})
-        });
-        document.getElementById("token").value = "";
-        await refresh();
-      });
-      document.getElementById("logoutButton").addEventListener("click", async () => {
-        await fetch("/api/lichess/logout", {method: "POST"});
-        await refresh();
-      });
-      document.getElementById("saveSettings").addEventListener("click", async () => {
-        const res = await fetch("/api/settings", {
-          method: "POST",
-          headers: {"Content-Type": "application/json"},
-          body: JSON.stringify({
-            ledsEnabled: document.getElementById("ledToggle").checked,
-            ledBrightness: Number(document.getElementById("ledBrightness").value),
-            boardOrientation: document.getElementById("orientation").value,
-            deviceName: document.getElementById("deviceName").value
-          })
-        });
-        document.getElementById("settingsStatus").textContent = res.ok ? "Saved" : "Could not save settings";
-        await refresh();
-      });
-      document.getElementById("wifiForm").addEventListener("submit", async (event) => {
-        event.preventDefault();
-        await fetch("/api/wifi/connect", {
-          method: "POST",
-          headers: {"Content-Type": "application/json"},
-          body: JSON.stringify({
-            ssid: document.getElementById("wifiSsidInput").value,
-            password: document.getElementById("wifiPassword").value
-          })
-        });
-        document.getElementById("wifiPassword").value = "";
-        await refresh();
-      });
-      document.getElementById("mainWifiForm").addEventListener("submit", async (event) => {
-        event.preventDefault();
-        await fetch("/api/wifi/connect", {
-          method: "POST",
-          headers: {"Content-Type": "application/json"},
-          body: JSON.stringify({
-            ssid: document.getElementById("mainWifiSsid").value,
-            password: document.getElementById("mainWifiPassword").value
-          })
-        });
-        document.getElementById("mainWifiPassword").value = "";
-        await refresh();
-      });
-      function selectWifiNetwork(ssid) {
-        document.getElementById("mainWifiSsid").value = ssid;
-        document.getElementById("mainWifiSsidDisplay").value = ssid;
-        document.getElementById("wifiSsidInput").value = ssid;
-        const firstKey = document.querySelector("#passwordKeyboard button");
-        (firstKey || document.getElementById("mainWifiPassword")).focus();
-      }
-      function appendPasswordChar(char) {
-        const mainPassword = document.getElementById("mainWifiPassword");
-        const tabPassword = document.getElementById("wifiPassword");
-        mainPassword.value += char;
-        tabPassword.value = mainPassword.value;
-      }
-      function backspacePassword() {
-        const mainPassword = document.getElementById("mainWifiPassword");
-        const tabPassword = document.getElementById("wifiPassword");
-        mainPassword.value = mainPassword.value.slice(0, -1);
-        tabPassword.value = mainPassword.value;
-      }
-      function clearPassword() {
-        document.getElementById("mainWifiPassword").value = "";
-        document.getElementById("wifiPassword").value = "";
-      }
-      function buildPasswordKeyboard() {
-        const target = document.getElementById("passwordKeyboard");
-        const keys = "abcdefghijklmnopqrstuvwxyz0123456789".split("");
-        const extras = ["-", "_", ".", "@", "!", "?", "#", "$", "%", "&"];
-        for (const key of [...keys, ...extras]) {
-          const button = document.createElement("button");
-          button.type = "button";
-          button.textContent = key;
-          button.dataset.key = key;
-          button.addEventListener("click", () => appendPasswordChar(button.textContent));
-          target.appendChild(button);
-        }
-        for (const action of [
-          ["Shift", () => {
-            passwordShift = !passwordShift;
-            updatePasswordKeyboardCase();
-          }],
-          ["Back", backspacePassword],
-          ["Clear", clearPassword],
-        ]) {
-          const button = document.createElement("button");
-          button.type = "button";
-          button.className = "wideKey";
-          button.textContent = action[0];
-          button.addEventListener("click", action[1]);
-          target.appendChild(button);
-        }
-      }
-      function updatePasswordKeyboardCase() {
-        for (const button of document.querySelectorAll("#passwordKeyboard button[data-key]")) {
-          const key = button.dataset.key;
-          button.textContent = key.length === 1 && key >= "a" && key <= "z" && passwordShift ? key.toUpperCase() : key;
-        }
-      }
-      async function scanWifiInto(targetId) {
-        if (wifiScanInFlight) return;
-        wifiScanInFlight = true;
-        const target = document.getElementById(targetId);
-        target.textContent = "Scanning...";
-        try {
-          const res = await fetch("/api/wifi/scan");
-          const networks = await res.json();
-          target.innerHTML = "";
-          for (const network of networks) {
-            const button = document.createElement("button");
-            button.type = "button";
-            button.textContent = `${network.ssid} (${network.signal}%)`;
-            button.addEventListener("click", () => selectWifiNetwork(network.ssid));
-            target.appendChild(button);
-          }
-          if (!networks.length) target.textContent = "No networks found";
-        } catch (error) {
-          target.textContent = "Could not scan Wi-Fi";
-        } finally {
-          wifiScanInFlight = false;
-        }
-      }
-      async function refreshWifiSetupNetworks() {
-        wifiSetupScanned = true;
-        await scanWifiInto("wifiSetupNetworks");
-      }
-      document.getElementById("scanWifi").addEventListener("click", async () => {
-        await scanWifiInto("wifiNetworks");
-      });
-      document.getElementById("mainScanWifi").addEventListener("click", async () => {
-        wifiSetupScanned = false;
-        await refreshWifiSetupNetworks();
-      });
-      document.getElementById("startHotspot").addEventListener("click", async () => {
-        await fetch("/api/wifi/hotspot", {method: "POST"});
-        await refresh();
-      });
-      async function gameAction(path) {
-        await fetch(path, {method: "POST"});
-        await refresh();
-      }
-      document.getElementById("resignButton").addEventListener("click", () => gameAction("/api/game/resign"));
-      document.getElementById("abortButton").addEventListener("click", () => gameAction("/api/game/abort"));
-      document.getElementById("drawButton").addEventListener("click", () => gameAction("/api/game/draw/yes"));
-      async function playAction(path, body) {
-        const res = await fetch(path, {
-          method: "POST",
-          headers: {"Content-Type": "application/json"},
-          body: JSON.stringify(body || {})
-        });
-        const text = await res.text();
-        document.getElementById("playStatus").textContent = res.ok ? text : `Error: ${text}`;
-        await refresh();
-      }
-      document.getElementById("challengeFriend").addEventListener("click", () => playAction("/api/play/friend", {
-        username: document.getElementById("friendUsername").value,
-        clockLimit: 180,
-        increment: 2
-      }));
-      document.getElementById("challengeAi").addEventListener("click", () => playAction("/api/play/ai", {
-        level: 3,
-        clockLimit: 180,
-        increment: 2
-      }));
-      document.getElementById("seekGame").addEventListener("click", () => playAction("/api/play/seek", {
-        timeMinutes: 3,
-        increment: 2
-      }));
-      document.getElementById("openChallenge").addEventListener("click", () => playAction("/api/play/open", {
-        timeMinutes: 3,
-        increment: 2
-      }));
-      document.getElementById("dailyPuzzle").addEventListener("click", () => playAction("/api/puzzles/daily"));
-      document.getElementById("nextPuzzle").addEventListener("click", () => playAction("/api/puzzles/next"));
-      for (const button of document.querySelectorAll(".tabButton")) {
-        button.addEventListener("click", () => {
-          window.userSelectedTab = true;
-          activateTab(button.dataset.tab);
-        });
+        latestState = await res.json();
+        syncStage();
+        renderScreen();
       }
       document.addEventListener("keydown", (event) => {
-        const lastKey = document.getElementById("lastKey");
-        if (lastKey) lastKey.textContent = event.key;
-        if (event.key === "ArrowUp") {
+        const keys = {ArrowUp: "up", ArrowDown: "down", ArrowLeft: "left", ArrowRight: "right", Enter: "select"};
+        if (keys[event.key]) {
           event.preventDefault();
-          handleCommand("up");
-        } else if (event.key === "ArrowDown") {
-          event.preventDefault();
-          handleCommand("down");
-        } else if (event.key === "ArrowLeft") {
-          event.preventDefault();
-          handleCommand("left");
-        } else if (event.key === "ArrowRight") {
-          event.preventDefault();
-          handleCommand("right");
-        } else if (event.key === "Enter") {
-          handleCommand("select");
+          handleCommand(keys[event.key]);
         }
       });
-      buildPasswordKeyboard();
       refresh();
-      focusFirstVisible();
       setInterval(refresh, 1000);
       setInterval(pollInput, 80);
     </script>
@@ -763,17 +590,67 @@ def create_app(
     @app.get("/api/phone-setup-qr.svg")
     def phone_setup_qr():
         return Response(
-            content=setup_url_qr_svg(wifi_manager.setup_url),
+            content=setup_url_qr_svg(f"{_phone_base_url()}/phone-setup"),
             media_type="image/svg+xml",
         )
 
     @app.get("/api/lichess-token-qr.svg")
-    def lichess_token_qr(request: Request):
-        auth_url = str(request.url_for("lichess_oauth_start"))
+    def lichess_token_qr():
+        auth_url = f"{_phone_base_url()}/auth/lichess/start"
         return Response(
             content=setup_url_qr_svg(auth_url),
             media_type="image/svg+xml",
         )
+
+    @app.get("/api/lichess-manual-token-qr.svg")
+    def lichess_manual_token_qr():
+        return Response(
+            content=setup_url_qr_svg(config_store.public_state()["lichessTokenUrl"]),
+            media_type="image/svg+xml",
+        )
+
+    @app.get("/phone-setup", response_class=HTMLResponse)
+    def phone_setup():
+        return HTMLResponse("""
+<!doctype html>
+<html>
+  <head>
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Chess Board Setup</title>
+    <style>
+      body { margin: 0; font-family: system-ui, sans-serif; background: #161512; color: #f0ede7; padding: 18px; }
+      main { max-width: 520px; margin: 0 auto; display: grid; gap: 14px; }
+      input, button { width: 100%; min-height: 48px; font-size: 17px; padding: 10px; box-sizing: border-box; }
+      button { background: #769656; color: #111; border: 0; font-weight: 800; }
+      .status { color: #f4d35e; font-weight: 800; min-height: 24px; }
+    </style>
+  </head>
+  <body>
+    <main>
+      <h1>Chess Board Setup</h1>
+      <p>Paste a Lichess API token with board play access. The board will save it automatically.</p>
+      <input id="token" type="password" autocomplete="off" placeholder="Lichess API token">
+      <button id="save">Send Token To Board</button>
+      <div id="status" class="status"></div>
+      <p><a style="color:#f4d35e" href="/auth/lichess/start">Connect with Lichess OAuth instead</a></p>
+    </main>
+    <script>
+      document.getElementById("save").addEventListener("click", async () => {
+        const token = document.getElementById("token").value.trim();
+        const status = document.getElementById("status");
+        status.textContent = "Sending...";
+        const res = await fetch("/api/lichess/token", {
+          method: "POST",
+          headers: {"Content-Type": "application/json"},
+          body: JSON.stringify({token})
+        });
+        status.textContent = res.ok ? "Saved. You can return to the board." : `Could not save token: ${await res.text()}`;
+        if (res.ok) document.getElementById("token").value = "";
+      });
+    </script>
+  </body>
+</html>
+""")
 
     @app.post("/api/settings")
     def update_settings(payload: SettingsRequest):
@@ -787,6 +664,17 @@ def create_app(
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
         return config_store.public_state()
+
+    @app.post("/api/led/test")
+    def led_test(payload: LedTestRequest):
+        try:
+            run_test = getattr(led_controller, "run_test")
+            run_test(payload.pattern)
+        except AttributeError as exc:
+            raise HTTPException(status_code=501, detail="LED test is not supported by this controller") from exc
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        return led_controller.status()
 
     @app.get("/api/wifi/status")
     def wifi_status():

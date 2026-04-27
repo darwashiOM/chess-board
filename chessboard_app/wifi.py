@@ -19,6 +19,28 @@ class WifiManager:
     def __init__(self, runner: CommandRunner = default_runner):
         self.runner = runner
 
+    def _status_payload(
+        self,
+        *,
+        available: bool,
+        connected: bool,
+        ssid: str | None,
+        interface: str | None,
+        ip: str | None,
+        mode: str,
+    ) -> dict[str, object]:
+        return {
+            "available": available,
+            "connected": connected,
+            "ssid": ssid,
+            "interface": interface,
+            "ip": ip,
+            "mode": mode,
+            "setupSsid": self.setup_ssid,
+            "setupPassword": self.setup_password,
+            "setupUrl": self.setup_url,
+        }
+
     def status(self) -> dict[str, object]:
         try:
             output = self.runner([
@@ -30,58 +52,105 @@ class WifiManager:
                 "wifi",
             ])
         except Exception:
-            return {
-                "available": False,
-                "connected": False,
-                "ssid": None,
-                "interface": None,
-                "ip": None,
-                "mode": "unavailable",
-                "setupSsid": self.setup_ssid,
-                "setupPassword": self.setup_password,
-                "setupUrl": self.setup_url,
-            }
+            wired_status = self._wired_status()
+            if wired_status is not None:
+                return wired_status
+            return self._status_payload(
+                available=False,
+                connected=False,
+                ssid=None,
+                interface=None,
+                ip=None,
+                mode="unavailable",
+            )
 
+        wifi_status = None
         for line in output.splitlines():
             parts = line.split(":")
             if len(parts) >= 5 and parts[0] == "yes":
-                return {
-                    "available": True,
-                    "connected": parts[3] == "connected",
-                    "ssid": parts[1] or None,
-                    "interface": parts[2] or None,
-                    "ip": parts[4].split("/")[0] if parts[4] else None,
-                    "mode": "setup" if parts[1] == self.setup_ssid else "client",
-                    "setupSsid": self.setup_ssid,
-                    "setupPassword": self.setup_password,
-                    "setupUrl": self.setup_url,
-                }
+                wifi_status = self._status_payload(
+                    available=True,
+                    connected=parts[3] == "connected",
+                    ssid=parts[1] or None,
+                    interface=parts[2] or None,
+                    ip=parts[4].split("/")[0] if parts[4] else None,
+                    mode="setup" if parts[1] == self.setup_ssid else "client",
+                )
+                break
             if len(parts) >= 4 and parts[2] == "connected":
-                return {
-                    "available": True,
-                    "connected": True,
-                    "ssid": parts[0] or None,
-                    "interface": parts[1] or None,
-                    "ip": parts[3].split("/")[0] if parts[3] else None,
-                    "mode": "setup" if parts[0] == self.setup_ssid else "client",
-                    "setupSsid": self.setup_ssid,
-                    "setupPassword": self.setup_password,
-                    "setupUrl": self.setup_url,
-                }
-        return {
-            "available": True,
-            "connected": False,
-            "ssid": None,
-            "interface": None,
-            "ip": None,
-            "mode": "disconnected",
-            "setupSsid": self.setup_ssid,
-            "setupPassword": self.setup_password,
-            "setupUrl": self.setup_url,
-        }
+                wifi_status = self._status_payload(
+                    available=True,
+                    connected=True,
+                    ssid=parts[0] or None,
+                    interface=parts[1] or None,
+                    ip=parts[3].split("/")[0] if parts[3] else None,
+                    mode="setup" if parts[0] == self.setup_ssid else "client",
+                )
+                break
+
+        if wifi_status and wifi_status["mode"] == "client":
+            return wifi_status
+
+        wired_status = self._wired_status()
+        if wired_status is not None:
+            return wired_status
+
+        if wifi_status is not None:
+            return wifi_status
+
+        return self._status_payload(
+            available=True,
+            connected=False,
+            ssid=None,
+            interface=None,
+            ip=None,
+            mode="disconnected",
+        )
+
+    def _wired_status(self) -> dict[str, object] | None:
+        try:
+            output = self.runner([
+                "nmcli",
+                "-t",
+                "-f",
+                "device,type,state,connection",
+                "dev",
+                "status",
+            ])
+        except Exception:
+            return None
+
+        for line in output.splitlines():
+            parts = line.split(":")
+            if len(parts) >= 4 and parts[1] == "ethernet" and parts[2] == "connected":
+                device = parts[0] or None
+                return self._status_payload(
+                    available=True,
+                    connected=True,
+                    ssid=parts[3] or None,
+                    interface=device,
+                    ip=self._device_ip(device),
+                    mode="wired",
+                )
+        return None
+
+    def _device_ip(self, device: str | None) -> str | None:
+        if not device:
+            return None
+        try:
+            output = self.runner(["nmcli", "-t", "-f", "ip4.address", "dev", "show", device])
+        except Exception:
+            return None
+        for line in output.splitlines():
+            value = line.split(":", 1)[-1]
+            if value:
+                return value.split("/")[0]
+        return None
 
     def scan(self) -> list[dict[str, object]]:
-        output = self.runner(["nmcli", "-t", "-f", "ssid,signal,security", "dev", "wifi", "list"])
+        self.enable_wifi()
+        self.stop_hotspot()
+        output = self.runner(["nmcli", "-t", "-f", "ssid,signal,security", "dev", "wifi", "list", "--rescan", "yes"])
         networks = []
         seen = set()
         for line in output.splitlines():
@@ -96,7 +165,21 @@ class WifiManager:
             })
         return networks
 
+    def stop_hotspot(self) -> None:
+        try:
+            self.runner(["nmcli", "connection", "down", self.setup_ssid])
+        except Exception:
+            pass
+
+    def enable_wifi(self) -> None:
+        try:
+            self.runner(["nmcli", "radio", "wifi", "on"])
+        except Exception:
+            pass
+
     def connect(self, ssid: str, password: str) -> None:
+        self.enable_wifi()
+        self.stop_hotspot()
         self.runner(["nmcli", "dev", "wifi", "connect", ssid, "password", password])
 
     def start_hotspot(self, ifname: str = "wlan0") -> None:

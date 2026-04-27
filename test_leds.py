@@ -14,7 +14,17 @@ class LedTest(unittest.TestCase):
             "enabled": True,
             "brightness": 0.4,
             "mode": "disabled",
+            "testPattern": "idle",
         })
+
+    def test_disabled_controller_records_test_pattern(self):
+        leds = DisabledLedController()
+
+        leds.run_test("border")
+
+        self.assertEqual(leds.status()["testPattern"], "border")
+        with self.assertRaises(ValueError):
+            leds.run_test("unknown")
 
 
 if __name__ == "__main__":
