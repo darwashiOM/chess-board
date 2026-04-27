@@ -1,6 +1,7 @@
 import argparse
 import os
 import sys
+import time
 
 
 def import_circuitpython_board():
@@ -35,6 +36,12 @@ def main():
     parser.add_argument("--count", type=int, default=81)
     parser.add_argument("--brightness", type=float, default=0.1)
     parser.add_argument("--color", type=parse_color, default=(255, 255, 255))
+    parser.add_argument(
+        "--refresh-hz",
+        type=float,
+        default=30.0,
+        help="How many times per second to resend the LED data.",
+    )
     args = parser.parse_args()
 
     circuit_board = import_circuitpython_board()
@@ -47,15 +54,21 @@ def main():
         brightness=args.brightness,
         auto_write=False,
     )
-    pixels.fill(args.color)
-    pixels.show()
+    delay = 1.0 / args.refresh_hz if args.refresh_hz > 0 else 0.0
 
-    print(f"Turned on {args.count} LEDs at brightness {args.brightness}.")
-    print("Press Enter to turn them off.")
-    input()
-
-    pixels.fill((0, 0, 0))
-    pixels.show()
+    print(f"Continuously sending {args.count} LEDs at brightness {args.brightness}.")
+    print("Press Ctrl-C to turn them off.")
+    try:
+        while True:
+            pixels.fill(args.color)
+            pixels.show()
+            if delay:
+                time.sleep(delay)
+    except KeyboardInterrupt:
+        pixels.fill((0, 0, 0))
+        pixels.show()
+        print()
+        print("LEDs off.")
 
 
 if __name__ == "__main__":
