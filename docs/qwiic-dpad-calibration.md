@@ -66,3 +66,35 @@ If you already know the address:
 ```bash
 python3 calibrate_qwiic_dpad.py --address 0x3F
 ```
+
+## Installed Mapping
+
+The current installed mapping is:
+
+```python
+QWIIC_DPAD = {
+    "address": 0x20,
+    "buttons": {
+        "up": {"register": 0x00, "bit": 0, "active": "cleared"},
+        "down": {"register": 0x00, "bit": 1, "active": "cleared"},
+        "left": {"register": 0x00, "bit": 3, "active": "cleared"},
+        "right": {"register": 0x00, "bit": 2, "active": "cleared"},
+        "select": {"register": 0x00, "bit": 4, "active": "cleared"},
+    },
+}
+```
+
+## Keyboard Bridge
+
+The d-pad can drive the kiosk browser through Linux keyboard events:
+
+```bash
+sudo .venv/bin/python dpad_keyboard.py
+```
+
+Installed service:
+
+```bash
+sudo systemctl restart chessboard-dpad.service
+journalctl -u chessboard-dpad.service -f
+```
