@@ -37,6 +37,11 @@ class KioskTest(unittest.TestCase):
         self.assertNotIn("activateRelativeTab", html)
         self.assertNotIn('class="tabButton"', html)
         self.assertNotIn("?.", html)
+        self.assertNotIn("=>", html)
+        self.assertNotIn("`", html)
+        self.assertNotIn("const ", html)
+        self.assertNotIn("let ", html)
+        self.assertNotIn("async function", html)
         self.assertIn("renderBootError", html)
         self.assertIn("/api/play/friend", html)
 

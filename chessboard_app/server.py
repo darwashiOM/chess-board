@@ -188,12 +188,15 @@ def create_app(
       <footer><span>Up</span><span>Down</span><span>Left Back</span><span>Right Open</span><span>Select</span></footer>
     </div>
     <script>
-      const squares = [];
-      for (let rank = 8; rank >= 1; rank--) for (const file of "abcdefgh") squares.push(file + rank);
-      const appEl = document.getElementById("screen");
-      const titleEl = document.getElementById("screenTitle");
-      const pillEl = document.getElementById("screenPill");
-      const PASSWORD_ROWS = [
+      var squares = [];
+      var files = "abcdefgh";
+      for (var rank = 8; rank >= 1; rank--) {
+        for (var fileIndex = 0; fileIndex < files.length; fileIndex++) squares.push(files[fileIndex] + rank);
+      }
+      var appEl = document.getElementById("screen");
+      var titleEl = document.getElementById("screenTitle");
+      var pillEl = document.getElementById("screenPill");
+      var PASSWORD_ROWS = [
         ["a", "b", "c", "d", "e", "f", "g", "h"],
         ["i", "j", "k", "l", "m", "n", "o", "p"],
         ["q", "r", "s", "t", "u", "v", "w", "x"],
@@ -202,7 +205,7 @@ def create_app(
         ["%", "^", "&", "*", "?", "-", "_", "."],
         ["Shift", "Back", "Clear", "Connect"]
       ];
-      const kioskState = {
+      var kioskState = {
         screen: "boot",
         selected: 0,
         gridRow: 0,
@@ -216,9 +219,9 @@ def create_app(
         lastCommand: "none",
         setupOverride: false
       };
-      let latestState = null;
-      let scanInFlight = false;
-      const mainMenu = [
+      var latestState = null;
+      var scanInFlight = false;
+      var mainMenu = [
         ["Play", "playMenu"],
         ["Current Game", "game"],
         ["Tactics", "tactics"],
@@ -227,21 +230,48 @@ def create_app(
         ["Board Test", "boardTest"],
         ["LED Test", "ledTest"]
       ];
-      const playMenu = [
-        ["Random 3+2", () => playAction("/api/play/seek", {timeMinutes: 3, increment: 2})],
-        ["Random 5+0", () => playAction("/api/play/seek", {timeMinutes: 5, increment: 0})],
-        ["AI 3+2", () => playAction("/api/play/ai", {level: 3, clockLimit: 180, increment: 2})],
-        ["Friend Link", () => playAction("/api/play/open", {timeMinutes: 3, increment: 2})],
-        ["Daily Puzzle", () => playAction("/api/puzzles/daily")],
-        ["Tactics", () => playAction("/api/puzzles/next")]
+      var playMenu = [
+        ["Random 3+2", function () { playAction("/api/play/seek", {timeMinutes: 3, increment: 2}); }],
+        ["Random 5+0", function () { playAction("/api/play/seek", {timeMinutes: 5, increment: 0}); }],
+        ["AI 3+2", function () { playAction("/api/play/ai", {level: 3, clockLimit: 180, increment: 2}); }],
+        ["Friend Link", function () { playAction("/api/play/open", {timeMinutes: 3, increment: 2}); }],
+        ["Daily Puzzle", function () { playAction("/api/puzzles/daily", {}); }],
+        ["Tactics", function () { playAction("/api/puzzles/next", {}); }]
       ];
       function activeControlRoot() { return appEl; }
+      function escapeHtml(value) {
+        return String(value).replace(/[&<>"]/g, function (char) {
+          return {"&": "&amp;", "<": "&lt;", ">": "&gt;", "\"": "&quot;"}[char];
+        });
+      }
+      function request(method, path, body, onOk, onError) {
+        var xhr = new XMLHttpRequest();
+        xhr.open(method, path, true);
+        xhr.setRequestHeader("Content-Type", "application/json");
+        xhr.onreadystatechange = function () {
+          if (xhr.readyState !== 4) return;
+          if (xhr.status >= 200 && xhr.status < 300) {
+            var data = null;
+            try { data = xhr.responseText ? JSON.parse(xhr.responseText) : null; } catch (error) { data = xhr.responseText; }
+            if (onOk) onOk(data, xhr);
+          } else if (onError) {
+            onError(xhr);
+          }
+        };
+        xhr.onerror = function () { if (onError) onError(xhr); };
+        xhr.send(body ? JSON.stringify(body) : null);
+      }
       function stageForState(state) {
-        if (!state) return "boot";
+        if (!state || !state.wifi) return "boot";
         if (!state.wifi.connected || !(state.wifi.mode === "client" || state.wifi.mode === "wired")) return "wifi";
-        if (!state.lichess.connected) return "lichess";
+        if (!state.lichess || !state.lichess.connected) return "lichess";
         return "app";
       }
+      function setHeader(title, pill) {
+        titleEl.textContent = title;
+        pillEl.textContent = pill || kioskState.lastCommand;
+      }
+      function selectedClass(index) { return index === kioskState.selected ? " selected" : ""; }
       function setScreen(screen) {
         kioskState.screen = screen;
         kioskState.selected = 0;
@@ -250,106 +280,114 @@ def create_app(
         renderScreen();
       }
       function syncStage() {
-        const stage = stageForState(latestState);
-        document.body.dataset.stage = stage;
-        if (stage === "wifi" && !["wifiList", "wifiPassword", "wifiError"].includes(kioskState.screen)) {
+        var stage = stageForState(latestState);
+        document.body.setAttribute("data-stage", stage);
+        if (stage === "wifi" && kioskState.screen !== "wifiList" && kioskState.screen !== "wifiPassword" && kioskState.screen !== "wifiError") {
           kioskState.screen = "wifiList";
           scanWifi();
         } else if (stage === "lichess" && kioskState.screen !== "lichessSetup") {
           kioskState.screen = "lichessSetup";
-        } else if (stage === "app" && !kioskState.setupOverride && ["boot", "wifiList", "wifiPassword", "wifiError", "lichessSetup"].includes(kioskState.screen)) {
+        } else if (stage === "app" && !kioskState.setupOverride && (kioskState.screen === "boot" || kioskState.screen === "wifiList" || kioskState.screen === "wifiPassword" || kioskState.screen === "wifiError" || kioskState.screen === "lichessSetup")) {
           kioskState.screen = "mainMenu";
         }
       }
-      function escapeHtml(value) {
-        return String(value).replace(/[&<>"]/g, char => ({"&": "&amp;", "<": "&lt;", ">": "&gt;", "\"": "&quot;"}[char]));
-      }
-      function setHeader(title, pill) {
-        titleEl.textContent = title;
-        pillEl.textContent = pill || kioskState.lastCommand;
-      }
-      function selectedClass(index) { return index === kioskState.selected ? " selected" : ""; }
       function renderMenu(title, items, subtitle) {
+        var html = '<section class="list">';
         setHeader(title, subtitle || "Menu");
-        appEl.innerHTML = `<section class="list">${items.map((item, index) => `<div class="item${selectedClass(index)}"><span>${escapeHtml(item[0])}</span><small>${index === kioskState.selected ? "open" : ""}</small></div>`).join("")}</section><div class="status">${escapeHtml(kioskState.message)}</div>`;
+        for (var i = 0; i < items.length; i++) {
+          html += '<div class="item' + selectedClass(i) + '"><span>' + escapeHtml(items[i][0]) + '</span><small>' + (i === kioskState.selected ? "open" : "") + '</small></div>';
+        }
+        html += '</section><div class="status">' + escapeHtml(kioskState.message) + '</div>';
+        appEl.innerHTML = html;
       }
       function renderWifiList() {
+        var html = '<section class="list">';
         setHeader("Choose Wi-Fi", scanInFlight ? "Scanning" : "Required");
-        const rows = kioskState.networks.map(network => [`${network.ssid}`, `${network.signal || 0}%`]);
-        rows.push(["Refresh Wi-Fi List", "scan"]);
-        appEl.innerHTML = `<section class="list">${rows.map((row, index) => `<div class="item${selectedClass(index)}"><span>${escapeHtml(row[0])}</span><small>${escapeHtml(row[1])}</small></div>`).join("")}</section><div class="status">${escapeHtml(kioskState.message || "Select your network")}</div>`;
+        for (var i = 0; i < kioskState.networks.length; i++) {
+          var network = kioskState.networks[i];
+          html += '<div class="item' + selectedClass(i) + '"><span>' + escapeHtml(network.ssid) + '</span><small>' + escapeHtml(network.signal || 0) + '%</small></div>';
+        }
+        html += '<div class="item' + selectedClass(kioskState.networks.length) + '"><span>Refresh Wi-Fi List</span><small>scan</small></div>';
+        html += '</section><div class="status">' + escapeHtml(kioskState.message || "Select your network") + '</div>';
+        appEl.innerHTML = html;
       }
       function displayKey(key) {
         return key.length === 1 && key >= "a" && key <= "z" && kioskState.shift ? key.toUpperCase() : key;
       }
       function renderWifiPassword() {
+        var html = '<div class="password">' + (kioskState.password ? escapeHtml(kioskState.password.replace(/./g, "*")) : "Password") + '</div><section class="keyboard">';
         setHeader(kioskState.selectedSsid || "Wi-Fi Password", "Type");
-        const rows = PASSWORD_ROWS.map((row, rowIndex) => `<div class="keyRow" style="grid-template-columns: repeat(${row.length}, 1fr)">${row.map((key, colIndex) => `<div class="key${rowIndex === kioskState.gridRow && colIndex === kioskState.gridCol ? " selected" : ""}">${escapeHtml(displayKey(key))}</div>`).join("")}</div>`).join("");
-        appEl.innerHTML = `<div class="password">${escapeHtml(kioskState.password.replace(/./g, "*")) || "Password"}</div><section class="keyboard">${rows}</section><div class="status">${escapeHtml(kioskState.message || "Select Connect when done")}</div>`;
+        for (var r = 0; r < PASSWORD_ROWS.length; r++) {
+          html += '<div class="keyRow" style="grid-template-columns: repeat(' + PASSWORD_ROWS[r].length + ', 1fr)">';
+          for (var c = 0; c < PASSWORD_ROWS[r].length; c++) {
+            html += '<div class="key' + (r === kioskState.gridRow && c === kioskState.gridCol ? " selected" : "") + '">' + escapeHtml(displayKey(PASSWORD_ROWS[r][c])) + '</div>';
+          }
+          html += '</div>';
+        }
+        html += '</section><div class="status">' + escapeHtml(kioskState.message || "Select Connect when done") + '</div>';
+        appEl.innerHTML = html;
       }
       function renderLichessSetup() {
         setHeader("Connect Lichess", "Required");
-        appEl.innerHTML = `<div class="qrGrid"><div class="qrCard"><div>Connect Lichess</div><img alt="Lichess OAuth QR code" src="/api/lichess-token-qr.svg"></div><div class="qrCard"><div>Get API Key</div><img alt="Get API Key QR code" src="/api/lichess-manual-token-qr.svg"></div><div class="qrCard"><div>Enter API Key</div><img alt="Enter API Key QR code" src="/api/phone-setup-qr.svg"></div></div><section class="list"><div class="item${selectedClass(0)}"><span>Check Connection</span><small>refresh</small></div><div class="item${selectedClass(1)}"><span>Open OAuth Here</span><small>/auth</small></div></section><div class="status">Scan on phone. The board continues automatically after token is saved.</div>`;
+        appEl.innerHTML = '<div class="qrGrid"><div class="qrCard"><div>Connect Lichess</div><img alt="Lichess OAuth QR code" src="/api/lichess-token-qr.svg"></div><div class="qrCard"><div>Get API Key</div><img alt="Get API Key QR code" src="/api/lichess-manual-token-qr.svg"></div><div class="qrCard"><div>Enter API Key</div><img alt="Enter API Key QR code" src="/api/phone-setup-qr.svg"></div></div><section class="list"><div class="item' + selectedClass(0) + '"><span>Check Connection</span><small>refresh</small></div><div class="item' + selectedClass(1) + '"><span>Open OAuth Here</span><small>/auth</small></div></section><div class="status">Scan on phone. The board continues automatically after token is saved.</div>';
       }
       function renderBoard() {
-        const state = latestState || {};
-        const sensors = state.sensors || {};
-        const orientation = state.boardOrientation === "black" ? [...squares].reverse() : squares;
-        return `<div class="board">${orientation.map(square => {
-          const file = square.charCodeAt(0) - 97;
-          const rank = Number(square[1]);
-          return `<div class="sq ${(file + rank) % 2 ? "light" : "dark"}">${sensors[square] ? `<div class="piece"></div>` : ""}</div>`;
-        }).join("")}</div>`;
+        var state = latestState || {};
+        var sensors = state.sensors || {};
+        var orientation = state.boardOrientation === "black" ? squares.slice().reverse() : squares;
+        var html = '<div class="board">';
+        for (var i = 0; i < orientation.length; i++) {
+          var square = orientation[i];
+          var file = square.charCodeAt(0) - 97;
+          var rank = Number(square.charAt(1));
+          html += '<div class="sq ' + ((file + rank) % 2 ? "light" : "dark") + '">' + (sensors[square] ? '<div class="piece"></div>' : '') + '</div>';
+        }
+        return html + '</div>';
       }
       function renderGame() {
-        const game = latestState && latestState.game ? latestState.game : {clock: {whiteMs: null, blackMs: null}};
-        const clock = game.clock || {whiteMs: null, blackMs: null};
-        const sync = latestState && latestState.sync ? latestState.sync : {matches: false, missing: [], extra: []};
+        var game = latestState && latestState.game ? latestState.game : {clock: {whiteMs: null, blackMs: null}};
+        var clock = game.clock || {whiteMs: null, blackMs: null};
+        var sync = latestState && latestState.sync ? latestState.sync : {matches: false, missing: [], extra: []};
         setHeader("Current Game", sync.matches ? "Synced" : "Fix Board");
-        appEl.innerHTML = `<div class="split">${renderBoard()}<div class="meta"><div>Game: <code>${escapeHtml(game.id || "none")}</code></div><div>Turn: <code>${escapeHtml(game.turn || "white")}</code></div><div>White: <code>${formatClock(clock.whiteMs)}</code></div><div>Black: <code>${formatClock(clock.blackMs)}</code></div><div>Last move: <code>${escapeHtml(game.lastMove || "none")}</code></div><div>Missing: <code>${escapeHtml((sync.missing || []).join(", ") || "none")}</code></div><div>Extra: <code>${escapeHtml((sync.extra || []).join(", ") || "none")}</code></div></div></div>`;
+        appEl.innerHTML = '<div class="split">' + renderBoard() + '<div class="meta"><div>Game: <code>' + escapeHtml(game.id || "none") + '</code></div><div>Turn: <code>' + escapeHtml(game.turn || "white") + '</code></div><div>White: <code>' + formatClock(clock.whiteMs) + '</code></div><div>Black: <code>' + formatClock(clock.blackMs) + '</code></div><div>Last move: <code>' + escapeHtml(game.lastMove || "none") + '</code></div><div>Missing: <code>' + escapeHtml((sync.missing || []).join(", ") || "none") + '</code></div><div>Extra: <code>' + escapeHtml((sync.extra || []).join(", ") || "none") + '</code></div></div></div>';
       }
       function renderSettings() {
-        const state = latestState || {};
-        const items = [
-          [`Lights ${state.ledsEnabled ? "On" : "Off"}`, "toggle"],
-          [`Brightness ${Math.round((state.ledBrightness || 0.1) * 100)}%`, "brightness"],
-          [`Orientation ${state.boardOrientation || "white"}`, "orientation"],
-          ["Reconnect Wi-Fi", "wifi"],
-          ["Disconnect Lichess", "logout"],
-          ["Back", "back"]
-        ];
-        renderMenu("Settings", items, "Board");
+        var state = latestState || {};
+        renderMenu("Settings", [["Lights " + (state.ledsEnabled ? "On" : "Off"), "toggle"], ["Brightness " + Math.round((state.ledBrightness || 0.1) * 100) + "%", "brightness"], ["Orientation " + (state.boardOrientation || "white"), "orientation"], ["Reconnect Wi-Fi", "wifi"], ["Disconnect Lichess", "logout"], ["Back", "back"]], "Board");
       }
       function renderDiagnostics() {
-        const state = latestState || {};
-        const occupied = squares.filter(square => state.sensors && state.sensors[square]);
-        const wifi = state.wifi || {};
-        const leds = state.leds || {};
-        const sync = state.sync || {missing: [], extra: []};
+        var state = latestState || {};
+        var wifi = state.wifi || {};
+        var leds = state.leds || {};
+        var sync = state.sync || {missing: [], extra: []};
+        var occupied = occupiedSquares(state);
         setHeader("Diagnostics", "Hardware");
-        appEl.innerHTML = `<div class="split">${renderBoard()}<div class="meta"><div>Wi-Fi: <code>${escapeHtml(wifi.ssid || wifi.mode || "unknown")}</code></div><div>IP: <code>${escapeHtml(wifi.ip || "none")}</code></div><div>Sensors active: <code>${occupied.length}/64</code></div><div>Occupied: <code>${escapeHtml(occupied.join(", ") || "none")}</code></div><div>LEDs: <code>${escapeHtml(leds.mode || "unknown")} ${Math.round((leds.brightness || 0) * 100)}%</code></div><div>Missing: <code>${escapeHtml((sync.missing || []).join(", ") || "none")}</code></div><div>Extra: <code>${escapeHtml((sync.extra || []).join(", ") || "none")}</code></div></div></div>`;
+        appEl.innerHTML = '<div class="split">' + renderBoard() + '<div class="meta"><div>Wi-Fi: <code>' + escapeHtml(wifi.ssid || wifi.mode || "unknown") + '</code></div><div>IP: <code>' + escapeHtml(wifi.ip || "none") + '</code></div><div>Sensors active: <code>' + occupied.length + '/64</code></div><div>Occupied: <code>' + escapeHtml(occupied.join(", ") || "none") + '</code></div><div>LEDs: <code>' + escapeHtml(leds.mode || "unknown") + ' ' + Math.round((leds.brightness || 0) * 100) + '%</code></div><div>Missing: <code>' + escapeHtml((sync.missing || []).join(", ") || "none") + '</code></div><div>Extra: <code>' + escapeHtml((sync.extra || []).join(", ") || "none") + '</code></div></div></div>';
+      }
+      function occupiedSquares(state) {
+        var occupied = [];
+        state = state || {};
+        for (var i = 0; i < squares.length; i++) if (state.sensors && state.sensors[squares[i]]) occupied.push(squares[i]);
+        return occupied;
       }
       function renderBoardTest() {
-        const occupied = squares.filter(square => latestState && latestState.sensors && latestState.sensors[square]);
-        const sync = latestState && latestState.sync ? latestState.sync : {missing: [], extra: []};
-        setHeader("Board Test", `${occupied.length}/64`);
-        appEl.innerHTML = `<div class="split">${renderBoard()}<div class="meta"><div>Place or remove pieces and watch the board update.</div><div>Active sensors: <code>${occupied.length}</code></div><div>Squares: <code>${escapeHtml(occupied.join(", ") || "none")}</code></div><div>Missing expected: <code>${escapeHtml((sync.missing || []).join(", ") || "none")}</code></div><div>Extra: <code>${escapeHtml((sync.extra || []).join(", ") || "none")}</code></div></div></div>`;
+        var sync = latestState && latestState.sync ? latestState.sync : {missing: [], extra: []};
+        var occupied = occupiedSquares(latestState);
+        setHeader("Board Test", occupied.length + "/64");
+        appEl.innerHTML = '<div class="split">' + renderBoard() + '<div class="meta"><div>Place or remove pieces and watch the board update.</div><div>Active sensors: <code>' + occupied.length + '</code></div><div>Squares: <code>' + escapeHtml(occupied.join(", ") || "none") + '</code></div><div>Missing expected: <code>' + escapeHtml((sync.missing || []).join(", ") || "none") + '</code></div><div>Extra: <code>' + escapeHtml((sync.extra || []).join(", ") || "none") + '</code></div></div></div>';
       }
       function renderLedTest() {
-        const items = [["All Lights", "all"], ["Border Chase", "border"], ["Square Test", "square"], ["Brightness Up", "up"], ["Brightness Down", "down"], ["Back", "back"]];
-        renderMenu("LED Test", items, kioskState.ledTest);
+        renderMenu("LED Test", [["All Lights", "all"], ["Border Chase", "border"], ["Square Test", "square"], ["Brightness Up", "up"], ["Brightness Down", "down"], ["Back", "back"]], kioskState.ledTest);
       }
       function renderScreen() {
-        if (kioskState.screen === "boot") {
-          setHeader("Chess Board", "Starting");
-          appEl.innerHTML = `<div class="status">Loading...</div>`;
-        } else if (kioskState.screen === "wifiList") renderWifiList();
+        if (kioskState.screen === "boot") { setHeader("Chess Board", "Starting"); appEl.innerHTML = '<div class="status">Loading...</div>'; }
+        else if (kioskState.screen === "wifiList") renderWifiList();
         else if (kioskState.screen === "wifiPassword") renderWifiPassword();
         else if (kioskState.screen === "wifiError") renderMenu("Wi-Fi Failed", [["Edit Password", "edit"], ["Choose Different Wi-Fi", "wifi"], ["Refresh Wi-Fi List", "scan"]], "Retry");
         else if (kioskState.screen === "lichessSetup") renderLichessSetup();
         else if (kioskState.screen === "mainMenu") renderMenu("Chess Board", mainMenu, latestState && latestState.lichess && latestState.lichess.username ? latestState.lichess.username : "Ready");
         else if (kioskState.screen === "playMenu") renderMenu("Play", playMenu, "Lichess");
-        else if (kioskState.screen === "tactics") renderMenu("Tactics", [["Daily Puzzle", () => playAction("/api/puzzles/daily")], ["Next Puzzle", () => playAction("/api/puzzles/next")], ["Back", "back"]], "Puzzle");
+        else if (kioskState.screen === "tactics") renderMenu("Tactics", [["Daily Puzzle", "daily"], ["Next Puzzle", "next"], ["Back", "back"]], "Puzzle");
         else if (kioskState.screen === "game") renderGame();
         else if (kioskState.screen === "settings") renderSettings();
         else if (kioskState.screen === "diagnostics") renderDiagnostics();
@@ -367,127 +405,73 @@ def create_app(
         if (kioskState.screen === "wifiError") return 3;
         return 0;
       }
-      function moveSelection(delta) {
-        const length = listLength();
-        if (!length) return;
-        kioskState.selected = (kioskState.selected + delta + length) % length;
-      }
+      function moveSelection(delta) { var length = listLength(); if (length) kioskState.selected = (kioskState.selected + delta + length) % length; }
       function moveKeyboard(rowDelta, colDelta) {
         kioskState.gridRow = (kioskState.gridRow + rowDelta + PASSWORD_ROWS.length) % PASSWORD_ROWS.length;
-        const row = PASSWORD_ROWS[kioskState.gridRow];
-        kioskState.gridCol = Math.min((kioskState.gridCol + colDelta + row.length) % row.length, row.length - 1);
+        var row = PASSWORD_ROWS[kioskState.gridRow];
+        kioskState.gridCol = (kioskState.gridCol + colDelta + row.length) % row.length;
       }
       function goBack() {
-        if (kioskState.screen === "wifiList" && kioskState.setupOverride) {
-          kioskState.setupOverride = false;
-          setScreen("mainMenu");
-        } else if (kioskState.screen === "wifiPassword" || kioskState.screen === "wifiError") setScreen("wifiList");
-        else if (["playMenu", "game", "tactics", "settings", "diagnostics", "boardTest", "ledTest"].includes(kioskState.screen)) setScreen("mainMenu");
+        if (kioskState.screen === "wifiList" && kioskState.setupOverride) { kioskState.setupOverride = false; setScreen("mainMenu"); }
+        else if (kioskState.screen === "wifiPassword" || kioskState.screen === "wifiError") setScreen("wifiList");
+        else if (kioskState.screen === "playMenu" || kioskState.screen === "game" || kioskState.screen === "tactics" || kioskState.screen === "settings" || kioskState.screen === "diagnostics" || kioskState.screen === "boardTest" || kioskState.screen === "ledTest") setScreen("mainMenu");
       }
-      async function activateSelected() {
+      function activateSelected() {
         if (kioskState.screen === "wifiList") {
-          if (kioskState.selected >= kioskState.networks.length) return scanWifi();
+          if (kioskState.selected >= kioskState.networks.length) { scanWifi(); return; }
           kioskState.selectedSsid = kioskState.networks[kioskState.selected].ssid;
           kioskState.password = "";
           setScreen("wifiPassword");
-        } else if (kioskState.screen === "wifiPassword") {
-          pressPasswordKey(PASSWORD_ROWS[kioskState.gridRow][kioskState.gridCol]);
-        } else if (kioskState.screen === "wifiError") {
-          if (kioskState.selected === 0) setScreen("wifiPassword");
-          else if (kioskState.selected === 1) setScreen("wifiList");
-          else scanWifi();
-        } else if (kioskState.screen === "lichessSetup") {
-          if (kioskState.selected === 0) await refresh();
-          else window.location.href = "/auth/lichess/start";
-        } else if (kioskState.screen === "mainMenu") {
-          setScreen(mainMenu[kioskState.selected][1]);
-        } else if (kioskState.screen === "playMenu") {
-          await playMenu[kioskState.selected][1]();
-        } else if (kioskState.screen === "tactics") {
-          if (kioskState.selected === 0) await playAction("/api/puzzles/daily");
-          else if (kioskState.selected === 1) await playAction("/api/puzzles/next");
-          else goBack();
-        } else if (kioskState.screen === "settings") {
-          await settingsAction(kioskState.selected);
-        } else if (kioskState.screen === "ledTest") {
-          await ledTestAction(kioskState.selected);
-        }
+        } else if (kioskState.screen === "wifiPassword") pressPasswordKey(PASSWORD_ROWS[kioskState.gridRow][kioskState.gridCol]);
+        else if (kioskState.screen === "wifiError") { if (kioskState.selected === 0) setScreen("wifiPassword"); else if (kioskState.selected === 1) setScreen("wifiList"); else scanWifi(); }
+        else if (kioskState.screen === "lichessSetup") { if (kioskState.selected === 0) refresh(); else window.location.href = "/auth/lichess/start"; }
+        else if (kioskState.screen === "mainMenu") setScreen(mainMenu[kioskState.selected][1]);
+        else if (kioskState.screen === "playMenu") playMenu[kioskState.selected][1]();
+        else if (kioskState.screen === "tactics") { if (kioskState.selected === 0) playAction("/api/puzzles/daily", {}); else if (kioskState.selected === 1) playAction("/api/puzzles/next", {}); else goBack(); }
+        else if (kioskState.screen === "settings") settingsAction(kioskState.selected);
+        else if (kioskState.screen === "ledTest") ledTestAction(kioskState.selected);
         renderScreen();
       }
-      async function pressPasswordKey(key) {
+      function pressPasswordKey(key) {
         if (key === "Shift") kioskState.shift = !kioskState.shift;
         else if (key === "Back") kioskState.password = kioskState.password.slice(0, -1);
         else if (key === "Clear") kioskState.password = "";
-        else if (key === "Connect") await connectWifi();
+        else if (key === "Connect") connectWifi();
         else kioskState.password += displayKey(key);
       }
-      async function connectWifi() {
-        kioskState.message = `Connecting to ${kioskState.selectedSsid}...`;
+      function connectWifi() {
+        kioskState.message = "Connecting to " + kioskState.selectedSsid + "...";
         renderScreen();
-        const res = await fetch("/api/wifi/connect", {method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify({ssid: kioskState.selectedSsid, password: kioskState.password})});
-        if (!res.ok) {
-          kioskState.message = "Could not connect. Check password.";
-          setScreen("wifiError");
-          return;
-        }
-        kioskState.message = "Connected";
-        kioskState.setupOverride = false;
-        await refresh();
+        request("POST", "/api/wifi/connect", {ssid: kioskState.selectedSsid, password: kioskState.password}, function () { kioskState.message = "Connected"; kioskState.setupOverride = false; refresh(); }, function () { kioskState.message = "Could not connect. Check password."; setScreen("wifiError"); });
       }
-      async function scanWifi() {
+      function scanWifi() {
         if (scanInFlight) return;
         scanInFlight = true;
         kioskState.message = "Scanning Wi-Fi...";
         renderScreen();
-        try {
-          const res = await fetch("/api/wifi/scan");
-          kioskState.networks = res.ok ? await res.json() : [];
-          kioskState.message = kioskState.networks.length ? "Select your network" : "No networks found";
-        } catch (error) {
-          kioskState.networks = [];
-          kioskState.message = "Could not scan Wi-Fi";
-        } finally {
-          scanInFlight = false;
-          kioskState.selected = 0;
-          renderScreen();
-        }
+        request("GET", "/api/wifi/scan", null, function (networks) { kioskState.networks = networks || []; kioskState.message = kioskState.networks.length ? "Select your network" : "No networks found"; scanInFlight = false; kioskState.selected = 0; renderScreen(); }, function () { kioskState.networks = []; kioskState.message = "Could not scan Wi-Fi"; scanInFlight = false; renderScreen(); });
       }
-      async function settingsAction(index) {
-        const state = latestState || {};
-        if (index === 0) await saveSettings({ledsEnabled: !state.ledsEnabled});
-        else if (index === 1) await saveSettings({ledBrightness: Math.min(1, ((state.ledBrightness || 0.1) + 0.1))});
-        else if (index === 2) await saveSettings({boardOrientation: state.boardOrientation === "black" ? "white" : "black"});
-        else if (index === 3) { kioskState.setupOverride = true; kioskState.networks = []; setScreen("wifiList"); await scanWifi(); }
-        else if (index === 4) { await fetch("/api/lichess/logout", {method: "POST"}); await refresh(); }
+      function settingsAction(index) {
+        var state = latestState || {};
+        if (index === 0) saveSettings({ledsEnabled: !state.ledsEnabled});
+        else if (index === 1) saveSettings({ledBrightness: Math.min(1, ((state.ledBrightness || 0.1) + 0.1))});
+        else if (index === 2) saveSettings({boardOrientation: state.boardOrientation === "black" ? "white" : "black"});
+        else if (index === 3) { kioskState.setupOverride = true; kioskState.networks = []; setScreen("wifiList"); scanWifi(); }
+        else if (index === 4) request("POST", "/api/lichess/logout", null, function () { refresh(); });
         else goBack();
       }
-      async function ledTestAction(index) {
-        if (index === 0) await runLedTest("all", "All Lights");
-        else if (index === 1) await runLedTest("border", "Border Chase");
-        else if (index === 2) await runLedTest("square", "Square Test");
-        else if (index === 3) await saveSettings({ledsEnabled: true, ledBrightness: Math.min(1, ((latestState && latestState.ledBrightness) || 0.1) + 0.1)});
-        else if (index === 4) await saveSettings({ledBrightness: Math.max(0.01, ((latestState && latestState.ledBrightness) || 0.1) - 0.1)});
+      function ledTestAction(index) {
+        if (index === 0) runLedTest("all", "All Lights");
+        else if (index === 1) runLedTest("border", "Border Chase");
+        else if (index === 2) runLedTest("square", "Square Test");
+        else if (index === 3) saveSettings({ledsEnabled: true, ledBrightness: Math.min(1, ((latestState && latestState.ledBrightness) || 0.1) + 0.1)});
+        else if (index === 4) saveSettings({ledBrightness: Math.max(0.01, ((latestState && latestState.ledBrightness) || 0.1) - 0.1)});
         else goBack();
       }
-      async function runLedTest(pattern, label) {
-        const res = await fetch("/api/led/test", {method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify({pattern})});
-        kioskState.ledTest = res.ok ? label : "LED test unavailable";
-        await refresh();
-      }
-      async function saveSettings(body) {
-        await fetch("/api/settings", {method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify(body)});
-        await refresh();
-      }
-      async function playAction(path, body) {
-        const res = await fetch(path, {method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify(body || {})});
-        kioskState.message = res.ok ? "Sent to Lichess" : `Error: ${await res.text()}`;
-        await refresh();
-      }
-      function formatClock(ms) {
-        if (ms === null || ms === undefined) return "--";
-        const total = Math.max(0, Math.floor(ms / 1000));
-        return `${Math.floor(total / 60)}:${String(total % 60).padStart(2, "0")}`;
-      }
+      function runLedTest(pattern, label) { request("POST", "/api/led/test", {pattern: pattern}, function () { kioskState.ledTest = label; refresh(); }, function () { kioskState.ledTest = "LED test unavailable"; renderScreen(); }); }
+      function saveSettings(body) { request("POST", "/api/settings", body, function () { refresh(); }); }
+      function playAction(path, body) { request("POST", path, body || {}, function () { kioskState.message = "Sent to Lichess"; refresh(); }, function (xhr) { kioskState.message = "Error: " + (xhr.responseText || xhr.status); renderScreen(); }); }
+      function formatClock(ms) { if (ms === null || ms === undefined) return "--"; var total = Math.max(0, Math.floor(ms / 1000)); return Math.floor(total / 60) + ":" + String(total % 60).replace(/^([0-9])$/, "0$1"); }
       function handleCommand(command) {
         kioskState.lastCommand = command;
         if (kioskState.screen === "wifiPassword") {
@@ -504,37 +488,14 @@ def create_app(
         }
         renderScreen();
       }
-      async function pollInput() {
-        try {
-          const res = await fetch("/api/input");
-          const commands = await res.json();
-          for (const command of commands) handleCommand(command);
-        } catch (error) {
-          kioskState.lastCommand = "input offline";
-        }
-      }
-      async function refresh() {
-        try {
-          const res = await fetch("/api/state");
-          if (!res.ok) throw new Error(`state ${res.status}`);
-          latestState = await res.json();
-          syncStage();
-          renderScreen();
-        } catch (error) {
-          renderBootError(error);
-        }
-      }
-      function renderBootError(error) {
-        setHeader("Chess Board", "Backend Error");
-        appEl.innerHTML = `<section class="list"><div class="item selected"><span>Waiting for backend</span><small>retrying</small></div></section><div class="status">${escapeHtml(error && error.message ? error.message : "Could not load /api/state")}</div>`;
-      }
-      document.addEventListener("keydown", (event) => {
-        const keys = {ArrowUp: "up", ArrowDown: "down", ArrowLeft: "left", ArrowRight: "right", Enter: "select"};
-        if (keys[event.key]) {
-          event.preventDefault();
-          handleCommand(keys[event.key]);
-        }
+      function pollInput() { request("GET", "/api/input", null, function (commands) { for (var i = 0; commands && i < commands.length; i++) handleCommand(commands[i]); }, function () { kioskState.lastCommand = "input offline"; }); }
+      function refresh() { request("GET", "/api/state", null, function (state) { latestState = state; syncStage(); renderScreen(); }, function (xhr) { renderBootError(xhr); }); }
+      function renderBootError(error) { setHeader("Chess Board", "Backend Error"); appEl.innerHTML = '<section class="list"><div class="item selected"><span>Waiting for backend</span><small>retrying</small></div></section><div class="status">Could not load /api/state</div>'; }
+      document.addEventListener("keydown", function (event) {
+        var keys = {ArrowUp: "up", ArrowDown: "down", ArrowLeft: "left", ArrowRight: "right", Enter: "select"};
+        if (keys[event.key]) { event.preventDefault(); handleCommand(keys[event.key]); }
       });
+      renderScreen();
       refresh();
       setInterval(refresh, 1000);
       setInterval(pollInput, 80);
@@ -653,17 +614,23 @@ def create_app(
       <p><a style="color:#f4d35e" href="/auth/lichess/start">Connect with Lichess OAuth instead</a></p>
     </main>
     <script>
-      document.getElementById("save").addEventListener("click", async () => {
-        const token = document.getElementById("token").value.trim();
-        const status = document.getElementById("status");
+      document.getElementById("save").addEventListener("click", function () {
+        var token = document.getElementById("token").value.replace(/^\\s+|\\s+$/g, "");
+        var status = document.getElementById("status");
+        var xhr = new XMLHttpRequest();
         status.textContent = "Sending...";
-        const res = await fetch("/api/lichess/token", {
-          method: "POST",
-          headers: {"Content-Type": "application/json"},
-          body: JSON.stringify({token})
-        });
-        status.textContent = res.ok ? "Saved. You can return to the board." : `Could not save token: ${await res.text()}`;
-        if (res.ok) document.getElementById("token").value = "";
+        xhr.open("POST", "/api/lichess/token", true);
+        xhr.setRequestHeader("Content-Type", "application/json");
+        xhr.onreadystatechange = function () {
+          if (xhr.readyState !== 4) return;
+          if (xhr.status >= 200 && xhr.status < 300) {
+            status.textContent = "Saved. You can return to the board.";
+            document.getElementById("token").value = "";
+          } else {
+            status.textContent = "Could not save token: " + (xhr.responseText || xhr.status);
+          }
+        };
+        xhr.send(JSON.stringify({token: token}));
       });
     </script>
   </body>
