@@ -23,6 +23,8 @@ class KioskTest(unittest.TestCase):
         self.assertIn("Send Token To Board", html)
         self.assertIn("/api/lichess-manual-token-qr.svg", html)
         self.assertIn("Choose Wi-Fi", html)
+        self.assertIn("No password needed", html)
+        self.assertIn("network.security", html)
         self.assertIn("state.wifi.connected", html)
         self.assertIn('state.wifi.mode === "wired"', html)
         self.assertIn("Board Test", html)
@@ -53,6 +55,7 @@ class KioskTest(unittest.TestCase):
         kiosk = Path("deploy/systemd/chessboard-kiosk.service").read_text(encoding="utf-8")
 
         self.assertIn("run_server.py --hardware", backend)
+        self.assertIn("User=root", backend)
         self.assertIn("--host 0.0.0.0", backend)
         self.assertNotIn("network-online.target", backend)
         self.assertIn("WantedBy=multi-user.target", backend)

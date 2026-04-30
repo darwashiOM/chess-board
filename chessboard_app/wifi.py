@@ -245,17 +245,20 @@ class WifiManager:
     def connect(self, ssid: str, password: str) -> None:
         self.enable_wifi()
         self.stop_hotspot()
-        self.runner([
+        command = [
             "nmcli",
             "dev",
             "wifi",
             "connect",
             ssid,
-            "password",
-            password,
+        ]
+        if password:
+            command.extend(["password", password])
+        command.extend([
             "ifname",
             self.wifi_interface,
         ])
+        self.runner(command)
 
     def start_hotspot(self, ifname: str = "wlan0") -> None:
         self.runner([

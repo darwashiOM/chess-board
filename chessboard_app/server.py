@@ -100,7 +100,7 @@ def create_app(
 
     class WifiConnectRequest(BaseModel):
         ssid: str
-        password: str
+        password: str = ""
 
     class InputRequest(BaseModel):
         command: str
@@ -233,6 +233,7 @@ def create_app(
         gridCol: 0,
         networks: [],
         selectedSsid: "",
+        selectedSecurity: "",
         password: "",
         shift: false,
         message: "",
@@ -326,18 +327,22 @@ def create_app(
         setHeader("Choose Wi-Fi", scanInFlight ? "Scanning" : "Required");
         for (var i = 0; i < kioskState.networks.length; i++) {
           var network = kioskState.networks[i];
-          html += '<div class="item' + selectedClass(i) + '"><span>' + escapeHtml(network.ssid) + '</span><small>' + escapeHtml(network.signal || 0) + '%</small></div>';
+          var security = network.security ? network.security : "Open";
+          html += '<div class="item' + selectedClass(i) + '"><span>' + escapeHtml(network.ssid) + '</span><small>' + escapeHtml(network.signal || 0) + '% ' + escapeHtml(security) + '</small></div>';
         }
         html += '<div class="item' + selectedClass(kioskState.networks.length) + '"><span>Refresh Wi-Fi List</span><small>scan</small></div>';
         html += '</section><div class="status">' + escapeHtml(kioskState.message || "Select your network") + '</div>';
         appEl.innerHTML = html;
+      }
+      function isOpenNetwork(network) {
+        return !network.security || network.security === "--" || network.security === "none";
       }
       function displayKey(key) {
         return key.length === 1 && key >= "a" && key <= "z" && kioskState.shift ? key.toUpperCase() : key;
       }
       function renderWifiPassword() {
         var html = '<div class="password">' + (kioskState.password ? escapeHtml(kioskState.password.replace(/./g, "*")) : "Password") + '</div><section class="keyboard">';
-        setHeader(kioskState.selectedSsid || "Wi-Fi Password", "Type");
+        setHeader(kioskState.selectedSsid || "Wi-Fi Password", kioskState.selectedSecurity || "Type");
         for (var r = 0; r < PASSWORD_ROWS.length; r++) {
           html += '<div class="keyRow" style="grid-template-columns: repeat(' + PASSWORD_ROWS[r].length + ', 1fr)">';
           for (var c = 0; c < PASSWORD_ROWS[r].length; c++) {
@@ -440,8 +445,11 @@ def create_app(
       function activateSelected() {
         if (kioskState.screen === "wifiList") {
           if (kioskState.selected >= kioskState.networks.length) { scanWifi(); return; }
-          kioskState.selectedSsid = kioskState.networks[kioskState.selected].ssid;
+          var network = kioskState.networks[kioskState.selected];
+          kioskState.selectedSsid = network.ssid;
+          kioskState.selectedSecurity = network.security || "Open";
           kioskState.password = "";
+          if (isOpenNetwork(network)) { kioskState.message = "No password needed"; connectWifi(); return; }
           setScreen("wifiPassword");
         } else if (kioskState.screen === "wifiPassword") pressPasswordKey(PASSWORD_ROWS[kioskState.gridRow][kioskState.gridCol]);
         else if (kioskState.screen === "wifiError") { if (kioskState.selected === 0) setScreen("wifiPassword"); else if (kioskState.selected === 1) setScreen("wifiList"); else scanWifi(); }

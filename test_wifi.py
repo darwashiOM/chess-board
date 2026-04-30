@@ -131,6 +131,14 @@ class WifiTest(unittest.TestCase):
         self.assertEqual(runner.calls[2], ["nmcli", "connection", "down", "ChessBoard-Setup"])
         self.assertEqual(runner.calls[3], ["nmcli", "dev", "wifi", "connect", "Home", "password", "password", "ifname", "wlan0"])
 
+    def test_connect_open_network_omits_password_argument(self):
+        runner = FakeRunner(["", "", "", ""])
+        wifi = WifiManager(runner=runner)
+
+        wifi.connect("Guest", "")
+
+        self.assertEqual(runner.calls[3], ["nmcli", "dev", "wifi", "connect", "Guest", "ifname", "wlan0"])
+
     def test_start_hotspot_uses_nmcli_hotspot(self):
         runner = FakeRunner([""])
         wifi = WifiManager(runner=runner)
