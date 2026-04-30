@@ -66,7 +66,8 @@ class KioskTest(unittest.TestCase):
         self.assertIn("User=root", dpad)
         self.assertIn("--mode http", dpad)
         self.assertIn("--kiosk", kiosk)
-        self.assertIn("/bin/sleep 1", kiosk)
+        self.assertIn("urllib.request", kiosk)
+        self.assertIn("/api/state", kiosk)
         self.assertIn("http://127.0.0.1:8000", kiosk)
 
     def test_install_script_updates_services(self):
