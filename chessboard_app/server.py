@@ -30,10 +30,14 @@ def build_state(
     sync = game_session.sync_status(snapshot)
     update_led_display(led_controller, game_session, sync)
     led_status = led_controller.status()
+    sensor_status = getattr(sensor_reader, "status", lambda: "ok")()
     state["hardware"] = {
-        "sensors": "ok",
+        "sensors": sensor_status,
         "leds": led_status["mode"],
     }
+    sensor_error = getattr(sensor_reader, "error", None)
+    if sensor_error:
+        state["hardware"]["sensorError"] = sensor_error
     state["leds"] = led_status
     state["sensors"] = snapshot
     state["sensorDetails"] = getattr(sensor_reader, "details", lambda: {})()

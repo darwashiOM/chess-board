@@ -72,6 +72,24 @@ class StaticSensorReader:
     def details(self) -> dict[str, dict[str, object]]:
         return sensor_details(self.occupancy)
 
+    def status(self) -> str:
+        return "ok"
+
+
+class UnavailableSensorReader(StaticSensorReader):
+    def __init__(self, error: str):
+        super().__init__()
+        self.error = error
+
+    def status(self) -> str:
+        return "unavailable"
+
+    def details(self) -> dict[str, dict[str, object]]:
+        details = super().details()
+        for value in details.values():
+            value["error"] = self.error
+        return details
+
 
 class McpSensorReader:
     def __init__(self, pins: Mapping[str, object]):
@@ -107,3 +125,6 @@ class McpSensorReader:
 
     def details(self) -> dict[str, dict[str, object]]:
         return sensor_details(self.read().as_dict())
+
+    def status(self) -> str:
+        return "ok"

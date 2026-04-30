@@ -2,7 +2,7 @@ import unittest
 
 import chess
 
-from chessboard_app.sensors import SensorSnapshot, StaticSensorReader, diff_occupancy, expected_occupancy_from_board
+from chessboard_app.sensors import SensorSnapshot, StaticSensorReader, UnavailableSensorReader, diff_occupancy, expected_occupancy_from_board
 
 
 class SensorsTest(unittest.TestCase):
@@ -36,6 +36,14 @@ class SensorsTest(unittest.TestCase):
         self.assertEqual(details["a8"]["chip"], "U69")
         self.assertEqual(details["a8"]["pin"], 7)
         self.assertEqual(details["a8"]["active"], False)
+
+    def test_unavailable_sensor_reader_reports_error_and_empty_board(self):
+        reader = UnavailableSensorReader("No I2C device at address: 0x20")
+
+        self.assertEqual(sum(reader.read().as_dict().values()), 0)
+        self.assertEqual(reader.status(), "unavailable")
+        self.assertIn("0x20", reader.error)
+        self.assertEqual(reader.details()["a8"]["error"], "No I2C device at address: 0x20")
 
 
 if __name__ == "__main__":
