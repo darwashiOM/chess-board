@@ -68,6 +68,9 @@ class KioskTest(unittest.TestCase):
         self.assertIn("--kiosk", kiosk)
         self.assertIn("urllib.request", kiosk)
         self.assertIn("/api/state", kiosk)
+        self.assertIn("until /usr/bin/python3", kiosk)
+        self.assertIn("exec /usr/bin/chromium-browser", kiosk)
+        self.assertNotIn("ExecStartPre", kiosk)
         self.assertIn("http://127.0.0.1:8000", kiosk)
 
     def test_install_script_updates_services(self):
