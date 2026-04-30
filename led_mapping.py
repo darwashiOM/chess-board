@@ -1,26 +1,19 @@
 import chess
 
 
-# Fill this with the physical LED indices from the calibration pass.
-# Rows are rank 8 down to rank 1; columns are file a through file h plus the
-# right-side border corner.
-#
-# Example shape only:
-# LED_GRID = [
-#     [ 0,  1,  2,  3,  4,  5,  6,  7,  8],
-#     [17, 16, 15, 14, 13, 12, 11, 10,  9],
-#     ...
-# ]
+# Physical LED corner grid, stored as zero-based DotStar indexes.
+# Rows are the board's corner rows from rank 8 edge down to rank 1 edge.
+# Columns are from a-file edge through h-file edge plus the h-side border.
 LED_GRID = [
-    [None, None, None, None, None, None, None, None, None],
-    [None, None, None, None, None, None, None, None, None],
-    [None, None, None, None, None, None, None, None, None],
-    [None, None, None, None, None, None, None, None, None],
-    [None, None, None, None, None, None, None, None, None],
-    [None, None, None, None, None, None, None, None, None],
-    [None, None, None, None, None, None, None, None, None],
-    [None, None, None, None, None, None, None, None, None],
-    [None, None, None, None, None, None, None, None, None],
+    [72, 73, 74, 75, 76, 77, 78, 79, 80],
+    [63, 64, 65, 66, 67, 68, 69, 70, 71],
+    [54, 55, 56, 57, 58, 59, 60, 61, 62],
+    [45, 46, 47, 48, 49, 50, 51, 52, 53],
+    [36, 37, 38, 39, 40, 41, 42, 43, 44],
+    [27, 28, 29, 30, 31, 32, 33, 34, 35],
+    [18, 19, 20, 21, 22, 23, 24, 25, 26],
+    [9, 10, 11, 12, 13, 14, 15, 16, 17],
+    [8, 7, 6, 5, 4, 3, 2, 1, 0],
 ]
 
 
@@ -40,12 +33,12 @@ def build_square_to_led(led_grid):
         bottom_row = top_row + 1
         for file_index, file_name in enumerate("abcdefgh"):
             square = f"{file_name}{rank}"
-            square_to_led[square] = [
+            square_to_led[square] = sorted([
                 led_grid[bottom_row][file_index],
                 led_grid[bottom_row][file_index + 1],
                 led_grid[top_row][file_index + 1],
                 led_grid[top_row][file_index],
-            ]
+            ])
     return square_to_led
 
 

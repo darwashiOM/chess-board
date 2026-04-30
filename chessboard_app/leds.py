@@ -1,6 +1,11 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import Sequence
+
+import chess
+
+from led_mapping import SQUARE_TO_LED
 
 
 @dataclass(frozen=True)
@@ -22,6 +27,15 @@ class DisabledLedController:
             raise ValueError("unknown LED test pattern")
         self.test_pattern = pattern
 
+    def clear(self) -> None:
+        self.test_pattern = "idle"
+
+    def show_legal_targets(self, board: chess.Board, from_square: str) -> None:
+        self.test_pattern = "legal-targets"
+
+    def show_move(self, uci: str) -> None:
+        self.test_pattern = "move"
+
     def status(self) -> dict[str, object]:
         return {
             "available": False,
@@ -30,3 +44,117 @@ class DisabledLedController:
             "mode": "disabled",
             "testPattern": self.test_pattern,
         }
+
+
+class MemoryLedController(DisabledLedController):
+    def __init__(self):
+        super().__init__()
+        self.mode = "idle"
+        self.highlighted_squares: list[str] = []
+
+    def clear(self) -> None:
+        self.mode = "idle"
+        self.highlighted_squares = []
+
+    def run_test(self, pattern: str) -> None:
+        super().run_test(pattern)
+        self.mode = pattern
+        self.highlighted_squares = []
+
+    def show_legal_targets(self, board: chess.Board, from_square: str) -> None:
+        self.mode = "legal-targets"
+        source = chess.parse_square(from_square)
+        self.highlighted_squares = [
+            chess.square_name(move.to_square)
+            for move in board.legal_moves
+            if move.from_square == source
+        ]
+
+    def show_move(self, uci: str) -> None:
+        self.mode = "move"
+        self.highlighted_squares = [uci[:2], uci[2:4]]
+
+    def status(self) -> dict[str, object]:
+        return {
+            "available": True,
+            "enabled": self.settings.enabled,
+            "brightness": self.settings.brightness,
+            "mode": self.mode,
+            "testPattern": self.test_pattern,
+            "highlightedSquares": self.highlighted_squares,
+        }
+
+
+class DotStarLedController(MemoryLedController):
+    def __init__(self, pixels, count: int = 81):
+        super().__init__()
+        self.pixels = pixels
+        self.count = count
+
+    @classmethod
+    def create(cls, count: int = 81) -> DotStarLedController:
+        import board as circuit_board  # type: ignore
+        import adafruit_dotstar as dotstar  # type: ignore
+
+        pixels = dotstar.DotStar(
+            circuit_board.SCK,
+            circuit_board.MOSI,
+            count,
+            brightness=0.1,
+            auto_write=False,
+        )
+        return cls(pixels, count=count)
+
+    def apply_settings(self, settings: LedSettings) -> None:
+        super().apply_settings(settings)
+        self.pixels.brightness = settings.brightness
+        if not settings.enabled:
+            self.clear()
+
+    def clear(self) -> None:
+        super().clear()
+        self.pixels.fill((0, 0, 0))
+        self.pixels.show()
+
+    def run_test(self, pattern: str) -> None:
+        super().run_test(pattern)
+        if not self.settings.enabled:
+            self.clear()
+            return
+        if pattern == "idle":
+            self.clear()
+        elif pattern == "all":
+            self._light_indexes(range(self.count), (0, 0, 80))
+        elif pattern == "border":
+            border = set()
+            for row in (0, 8):
+                border.update(range(row * 9, row * 9 + 9))
+            for row in range(9):
+                border.add(row * 9)
+                border.add(row * 9 + 8)
+            self._light_indexes(border, (0, 80, 30))
+        elif pattern == "square":
+            self._light_squares(["e4", "d4", "e5", "d5"], (80, 60, 0))
+
+    def show_legal_targets(self, board: chess.Board, from_square: str) -> None:
+        super().show_legal_targets(board, from_square)
+        if self.settings.enabled:
+            self._light_squares(self.highlighted_squares, (80, 70, 0))
+
+    def show_move(self, uci: str) -> None:
+        super().show_move(uci)
+        if self.settings.enabled:
+            self._light_squares(self.highlighted_squares, (0, 50, 90))
+
+    def _light_squares(self, squares: Sequence[str], color: tuple[int, int, int]) -> None:
+        indexes = []
+        for square in squares:
+            indexes.extend(SQUARE_TO_LED.get(square, []))
+        self._light_indexes(indexes, color)
+
+    def _light_indexes(self, indexes, color: tuple[int, int, int]) -> None:
+        self.pixels.fill((0, 0, 0))
+        for index in indexes:
+            if 0 <= index < self.count:
+                self.pixels[index] = color
+        self.pixels.show()

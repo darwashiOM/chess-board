@@ -1,12 +1,14 @@
 import argparse
 
+from chessboard_app.leds import DisabledLedController, DotStarLedController
 from chessboard_app.sensors import McpSensorReader, StaticSensorReader
 from chessboard_app.server import create_app
 
 
 def build_app(use_hardware=False):
     sensor_reader = McpSensorReader.create() if use_hardware else StaticSensorReader()
-    return create_app(sensor_reader=sensor_reader)
+    led_controller = DotStarLedController.create() if use_hardware else DisabledLedController()
+    return create_app(sensor_reader=sensor_reader, led_controller=led_controller)
 
 
 app = build_app(use_hardware=False)

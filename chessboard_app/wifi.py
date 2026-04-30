@@ -15,6 +15,7 @@ class WifiManager:
     setup_ssid = "ChessBoard-Setup"
     setup_password = "chessboard"
     setup_url = "http://10.42.0.1:8000"
+    wifi_interface = "wlan0"
 
     def __init__(self, runner: CommandRunner = default_runner):
         self.runner = runner
@@ -150,8 +151,30 @@ class WifiManager:
     def scan(self) -> list[dict[str, object]]:
         self.enable_wifi()
         self.stop_hotspot()
-        output = self.runner(["nmcli", "-t", "-f", "ssid,signal,security", "dev", "wifi", "list", "--rescan", "yes"])
-        networks = []
+        self.rescan()
+        try:
+            output = self.runner([
+                "nmcli",
+                "-t",
+                "-f",
+                "ssid,signal,security",
+                "dev",
+                "wifi",
+                "list",
+                "ifname",
+                self.wifi_interface,
+                "--rescan",
+                "yes",
+            ])
+        except Exception:
+            output = ""
+        networks = self._parse_nmcli_networks(output)
+        if networks:
+            return networks
+        return self._scan_with_iw()
+
+    def _parse_nmcli_networks(self, output: str) -> list[dict[str, object]]:
+        networks: list[dict[str, object]] = []
         seen = set()
         for line in output.splitlines():
             parts = line.split(":")
@@ -165,6 +188,38 @@ class WifiManager:
             })
         return networks
 
+    def _scan_with_iw(self) -> list[dict[str, object]]:
+        try:
+            output = self.runner(["iw", "dev", self.wifi_interface, "scan"])
+        except Exception:
+            return []
+
+        networks = []
+        seen = set()
+        current: dict[str, object] | None = None
+        privacy = False
+        for line in output.splitlines():
+            stripped = line.strip()
+            if stripped.startswith("BSS "):
+                if current and current.get("ssid") and current["ssid"] not in seen:
+                    current["security"] = "WPA/WPA2" if privacy else ""
+                    networks.append(current)
+                    seen.add(current["ssid"])
+                current = {"ssid": None, "signal": 0, "security": ""}
+                privacy = False
+            elif current is not None and stripped.startswith("SSID:"):
+                current["ssid"] = stripped.split("SSID:", 1)[1].strip()
+            elif current is not None and stripped.startswith("signal:"):
+                value = stripped.split("signal:", 1)[1].strip().split()[0]
+                current["signal"] = _dbm_to_percent(float(value))
+            elif current is not None and "Privacy" in stripped:
+                privacy = True
+
+        if current and current.get("ssid") and current["ssid"] not in seen:
+            current["security"] = "WPA/WPA2" if privacy else ""
+            networks.append(current)
+        return networks
+
     def stop_hotspot(self) -> None:
         try:
             self.runner(["nmcli", "connection", "down", self.setup_ssid])
@@ -176,11 +231,31 @@ class WifiManager:
             self.runner(["nmcli", "radio", "wifi", "on"])
         except Exception:
             pass
+        try:
+            self.runner(["rfkill", "unblock", "wifi"])
+        except Exception:
+            pass
+
+    def rescan(self) -> None:
+        try:
+            self.runner(["nmcli", "dev", "wifi", "rescan", "ifname", self.wifi_interface])
+        except Exception:
+            pass
 
     def connect(self, ssid: str, password: str) -> None:
         self.enable_wifi()
         self.stop_hotspot()
-        self.runner(["nmcli", "dev", "wifi", "connect", ssid, "password", password])
+        self.runner([
+            "nmcli",
+            "dev",
+            "wifi",
+            "connect",
+            ssid,
+            "password",
+            password,
+            "ifname",
+            self.wifi_interface,
+        ])
 
     def start_hotspot(self, ifname: str = "wlan0") -> None:
         self.runner([
@@ -195,3 +270,11 @@ class WifiManager:
             "password",
             self.setup_password,
         ])
+
+
+def _dbm_to_percent(dbm: float) -> int:
+    if dbm <= -90:
+        return 0
+    if dbm >= -50:
+        return 100
+    return int(round(100 * (dbm + 90) / 40))

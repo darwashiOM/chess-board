@@ -27,6 +27,8 @@ def build_state(
         enabled=state["ledsEnabled"],
         brightness=state["ledBrightness"],
     ))
+    sync = game_session.sync_status(snapshot)
+    update_led_display(led_controller, game_session, sync)
     led_status = led_controller.status()
     state["hardware"] = {
         "sensors": "ok",
@@ -36,9 +38,28 @@ def build_state(
     state["sensors"] = snapshot
     state["sensorDetails"] = getattr(sensor_reader, "details", lambda: {})()
     state["game"] = game_session.public_state()
-    state["sync"] = game_session.sync_status(snapshot)
+    state["sync"] = sync
     state["wifi"] = wifi_manager.status()
     return state
+
+
+def update_led_display(led_controller: Any, game_session: GameSession, sync: dict[str, Any]) -> None:
+    settings = getattr(led_controller, "settings", LedSettings())
+    if not settings.enabled:
+        return
+
+    missing = list(sync.get("missing", []))
+    extra = list(sync.get("extra", []))
+    if sync.get("matches"):
+        getattr(led_controller, "clear", lambda: None)()
+        return
+
+    if len(missing) == 1 and not extra:
+        led_controller.show_legal_targets(game_session.board, missing[0])
+        return
+
+    if game_session.last_move:
+        led_controller.show_move(game_session.last_move)
 
 
 def create_app(

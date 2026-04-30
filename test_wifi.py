@@ -10,7 +10,10 @@ class FakeRunner:
 
     def __call__(self, args):
         self.calls.append(args)
-        return self.outputs.pop(0)
+        output = self.outputs.pop(0)
+        if isinstance(output, Exception):
+            raise output
+        return output
 
 
 class WifiTest(unittest.TestCase):
@@ -28,7 +31,7 @@ class WifiTest(unittest.TestCase):
         self.assertEqual(status["mode"], "client")
 
     def test_scan_parses_networks(self):
-        runner = FakeRunner(["", "", "Home:80:WPA2\nCafe:40:WPA1 WPA2\n"])
+        runner = FakeRunner(["", "", "", "", "Home:80:WPA2\nCafe:40:WPA1 WPA2\n"])
         wifi = WifiManager(runner=runner)
 
         self.assertEqual(wifi.scan(), [
@@ -41,13 +44,22 @@ class WifiTest(unittest.TestCase):
             "wifi",
             "on",
         ])
-        self.assertEqual(runner.calls[1], [
+        self.assertEqual(runner.calls[1], ["rfkill", "unblock", "wifi"])
+        self.assertEqual(runner.calls[2], [
             "nmcli",
             "connection",
             "down",
             "ChessBoard-Setup",
         ])
-        self.assertEqual(runner.calls[2], [
+        self.assertEqual(runner.calls[3], [
+            "nmcli",
+            "dev",
+            "wifi",
+            "rescan",
+            "ifname",
+            "wlan0",
+        ])
+        self.assertEqual(runner.calls[4], [
             "nmcli",
             "-t",
             "-f",
@@ -55,9 +67,28 @@ class WifiTest(unittest.TestCase):
             "dev",
             "wifi",
             "list",
+            "ifname",
+            "wlan0",
             "--rescan",
             "yes",
         ])
+
+    def test_scan_falls_back_to_iw_when_nmcli_finds_nothing(self):
+        runner = FakeRunner([
+            "",
+            "",
+            "",
+            "",
+            "",
+            "BSS aa:bb:cc(on wlan0)\n\tSSID: Home\n\tsignal: -45.00 dBm\n\tcapability: ESS Privacy\nBSS dd:ee:ff(on wlan0)\n\tSSID: Cafe\n\tsignal: -70.00 dBm\n\tcapability: ESS\n",
+        ])
+        wifi = WifiManager(runner=runner)
+
+        self.assertEqual(wifi.scan(), [
+            {"ssid": "Home", "signal": 100, "security": "WPA/WPA2"},
+            {"ssid": "Cafe", "signal": 50, "security": ""},
+        ])
+        self.assertEqual(runner.calls[-1], ["iw", "dev", "wlan0", "scan"])
 
     def test_status_uses_wired_connection_as_network_ready(self):
         runner = FakeRunner([
@@ -90,14 +121,15 @@ class WifiTest(unittest.TestCase):
         self.assertEqual(status["interface"], "eth0")
 
     def test_connect_uses_nmcli(self):
-        runner = FakeRunner(["", "", ""])
+        runner = FakeRunner(["", "", "", ""])
         wifi = WifiManager(runner=runner)
 
         wifi.connect("Home", "password")
 
         self.assertEqual(runner.calls[0], ["nmcli", "radio", "wifi", "on"])
-        self.assertEqual(runner.calls[1], ["nmcli", "connection", "down", "ChessBoard-Setup"])
-        self.assertEqual(runner.calls[2], ["nmcli", "dev", "wifi", "connect", "Home", "password", "password"])
+        self.assertEqual(runner.calls[1], ["rfkill", "unblock", "wifi"])
+        self.assertEqual(runner.calls[2], ["nmcli", "connection", "down", "ChessBoard-Setup"])
+        self.assertEqual(runner.calls[3], ["nmcli", "dev", "wifi", "connect", "Home", "password", "password", "ifname", "wlan0"])
 
     def test_start_hotspot_uses_nmcli_hotspot(self):
         runner = FakeRunner([""])
