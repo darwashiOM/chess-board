@@ -94,6 +94,7 @@ class LocalComputerGame:
                 sync.get("missing", []),
                 sync.get("extra", []),
                 self.setup_frame,
+                occupied_squares=[square for square, present in occupancy.items() if present],
             )
             self.setup_frame += 1
             return "sync_required"

@@ -49,6 +49,7 @@ class DisabledLedController:
         missing_squares: Sequence[str],
         extra_squares: Sequence[str],
         frame: int = 0,
+        occupied_squares: Sequence[str] | None = None,
     ) -> None:
         self.test_pattern = "setup"
 
@@ -104,6 +105,7 @@ class MemoryLedController(DisabledLedController):
         missing_squares: Sequence[str],
         extra_squares: Sequence[str],
         frame: int = 0,
+        occupied_squares: Sequence[str] | None = None,
     ) -> None:
         self.mode = "setup"
         self.highlighted_squares = list(missing_squares)
@@ -193,14 +195,15 @@ class DotStarLedController(MemoryLedController):
         missing_squares: Sequence[str],
         extra_squares: Sequence[str],
         frame: int = 0,
+        occupied_squares: Sequence[str] | None = None,
     ) -> None:
-        super().show_setup_guidance(missing_squares, extra_squares, frame)
+        super().show_setup_guidance(missing_squares, extra_squares, frame, occupied_squares)
         if not self.settings.enabled:
             self.clear()
             return
 
         self.pixels.fill((0, 0, 0))
-        self._render_setup_background(frame)
+        self._render_setup_background(frame, occupied_squares or [])
         self._set_square_markers(missing_squares, MISSING_COLOR)
         self._set_square_markers(extra_squares, EXTRA_COLOR)
         self.pixels.show()
@@ -236,42 +239,51 @@ class DotStarLedController(MemoryLedController):
 
     def _set_square_markers(self, squares: Sequence[str], color: tuple[int, int, int]) -> None:
         for square in squares:
-            indexes = SQUARE_TO_LED.get(square, [])
-            if indexes:
-                index = min(indexes)
-                if 0 <= index < self.count:
-                    self.pixels[index] = color
+            index = _square_marker(square)
+            if index is not None and 0 <= index < self.count:
+                self.pixels[index] = color
 
-    def _render_setup_background(self, frame: int) -> None:
+    def _render_setup_background(self, frame: int, occupied_squares: Sequence[str]) -> None:
         pattern = (frame // SETUP_PATTERN_PERIOD) % 3
         if pattern == 0:
-            self._render_diagonal_wave(frame)
+            self._render_diagonal_wave(frame, occupied_squares)
         elif pattern == 1:
-            self._render_soft_scan(frame)
+            self._render_soft_scan(frame, occupied_squares)
         else:
-            self._render_comet_field(frame)
+            self._render_comet_field(frame, occupied_squares)
 
-    def _render_diagonal_wave(self, frame: int) -> None:
-        for row, grid_row in enumerate(LED_GRID):
-            for col, index in enumerate(grid_row):
-                phase = ((row + col + frame) % 12) / 12
-                glow = 0.18 + 0.82 * ((1 - math.cos(phase * math.tau)) / 2)
-                self.pixels[index] = _scale_color((26, 12, 2), glow)
+    def _render_diagonal_wave(self, frame: int, occupied_squares: Sequence[str]) -> None:
+        for square in occupied_squares:
+            index = _square_marker(square)
+            if index is None:
+                continue
+            row = index // 9
+            col = index % 9
+            phase = ((row + col + frame) % 12) / 12
+            glow = 0.18 + 0.82 * ((1 - math.cos(phase * math.tau)) / 2)
+            self.pixels[index] = _scale_color((26, 12, 2), glow)
 
-    def _render_soft_scan(self, frame: int) -> None:
+    def _render_soft_scan(self, frame: int, occupied_squares: Sequence[str]) -> None:
         scan_col = (frame // 3) % 9
-        for row, grid_row in enumerate(LED_GRID):
-            for col, index in enumerate(grid_row):
-                distance = min(abs(col - scan_col), 9 - abs(col - scan_col))
-                glow = max(0.16, 1 - distance * 0.32)
-                self.pixels[index] = _scale_color((28, 16, 4), glow)
+        for square in occupied_squares:
+            index = _square_marker(square)
+            if index is None:
+                continue
+            col = index % 9
+            distance = min(abs(col - scan_col), 9 - abs(col - scan_col))
+            glow = max(0.16, 1 - distance * 0.32)
+            self.pixels[index] = _scale_color((28, 16, 4), glow)
 
-    def _render_comet_field(self, frame: int) -> None:
-        head = frame % self.count
-        for index in range(self.count):
-            distance = (head - index) % self.count
-            if distance <= 5:
-                self.pixels[index] = _scale_color((34, 14, 1), 1 - distance * 0.14)
+    def _render_comet_field(self, frame: int, occupied_squares: Sequence[str]) -> None:
+        occupied_markers = [_square_marker(square) for square in occupied_squares]
+        occupied_markers = [index for index in occupied_markers if index is not None]
+        if not occupied_markers:
+            return
+        head_position = frame % len(occupied_markers)
+        for position, index in enumerate(occupied_markers):
+            distance = (head_position - position) % len(occupied_markers)
+            if distance <= 3:
+                self.pixels[index] = _scale_color((34, 14, 1), 1 - distance * 0.2)
             else:
                 self.pixels[index] = (2, 1, 0)
 
@@ -290,3 +302,10 @@ def _breath_value(frame: int) -> float:
 
 def _scale_color(color: tuple[int, int, int], scale: float) -> tuple[int, int, int]:
     return tuple(max(0, min(255, int(channel * scale))) for channel in color)
+
+
+def _square_marker(square: str) -> int | None:
+    indexes = SQUARE_TO_LED.get(square, [])
+    if not indexes:
+        return None
+    return min(indexes)
