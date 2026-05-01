@@ -78,7 +78,7 @@ class LocalComputerGame:
                 self.last_occupancy = occupancy
                 if not self.board_synced:
                     self.board_synced = True
-                    self.leds.clear()
+                    self.leds.show_ready_animation()
                     return "synced"
                 return "idle"
             if len(lifted) == 1 and not placed:

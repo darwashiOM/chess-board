@@ -68,6 +68,7 @@ class LocalComputerGameTest(unittest.TestCase):
 
         self.assertEqual(result, "synced")
         self.assertEqual(game.sync_message(), "Board synced. Make your move.")
+        self.assertEqual(leds.mode, "ready")
 
     def test_confirms_computer_move_when_physical_board_matches(self):
         leds = MemoryLedController()

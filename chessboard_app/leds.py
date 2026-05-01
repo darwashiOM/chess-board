@@ -1,11 +1,19 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import time
 from typing import Sequence
 
 import chess
 
-from led_mapping import SQUARE_TO_LED
+from led_mapping import LED_GRID, SQUARE_TO_LED
+
+
+SETUP_ANIMATION_LEDS = [
+    LED_GRID[row][col]
+    for row in range(3, 6)
+    for col in range(3, 6)
+]
 
 
 @dataclass(frozen=True)
@@ -43,6 +51,9 @@ class DisabledLedController:
         frame: int = 0,
     ) -> None:
         self.test_pattern = "setup"
+
+    def show_ready_animation(self, delay: float = 0.008) -> None:
+        self.test_pattern = "ready"
 
     def status(self) -> dict[str, object]:
         return {
@@ -98,6 +109,11 @@ class MemoryLedController(DisabledLedController):
         self.highlighted_squares = list(missing_squares)
         self.extra_squares = list(extra_squares)
         self.setup_frame = frame
+
+    def show_ready_animation(self, delay: float = 0.008) -> None:
+        self.mode = "ready"
+        self.highlighted_squares = []
+        self.extra_squares = []
 
     def status(self) -> dict[str, object]:
         return {
@@ -183,18 +199,34 @@ class DotStarLedController(MemoryLedController):
             self.clear()
             return
 
-        palette = [
-            (10, 0, 45),
-            (0, 18, 55),
-            (0, 45, 35),
-            (35, 45, 0),
-            (55, 16, 0),
-            (38, 0, 48),
+        center_palette = [
+            (0, 0, 35),
+            (0, 20, 60),
+            (0, 60, 45),
+            (55, 45, 0),
+            (70, 10, 0),
+            (45, 0, 55),
         ]
-        for index in range(self.count):
-            self.pixels[index] = palette[(index + frame) % len(palette)]
+        self.pixels.fill((0, 0, 0))
+        for offset, index in enumerate(SETUP_ANIMATION_LEDS):
+            if 0 <= index < self.count:
+                self.pixels[index] = center_palette[(offset + frame) % len(center_palette)]
         self._set_square_color(missing_squares, (0, 120, 40))
         self._set_square_color(extra_squares, (120, 0, 0))
+        self.pixels.show()
+
+    def show_ready_animation(self, delay: float = 0.008) -> None:
+        super().show_ready_animation(delay)
+        if not self.settings.enabled:
+            self.clear()
+            return
+        for index in range(self.count):
+            self.pixels.fill((0, 0, 0))
+            self.pixels[index] = (0, 90, 35)
+            self.pixels.show()
+            if delay:
+                time.sleep(delay)
+        self.pixels.fill((0, 0, 0))
         self.pixels.show()
 
     def _light_squares(self, squares: Sequence[str], color: tuple[int, int, int]) -> None:
