@@ -6,6 +6,10 @@ from chessboard_app.leds import DotStarLedController, DisabledLedController, Led
 from led_mapping import SQUARE_TO_LED
 
 
+def marker_led(square):
+    return min(SQUARE_TO_LED[square])
+
+
 class FakePixels:
     def __init__(self, count=81):
         self.values = [(0, 0, 0)] * count
@@ -84,14 +88,14 @@ class MemoryLedControllerTest(unittest.TestCase):
         leds.show_setup_guidance(["a1"], ["h8"], frame=1)
 
         lit = {index for index, value in enumerate(pixels.values) if value != (0, 0, 0)}
-        expected_problem_leds = set(SQUARE_TO_LED["a1"]) | set(SQUARE_TO_LED["h8"])
+        expected_problem_leds = {marker_led("a1"), marker_led("h8")}
         self.assertTrue(expected_problem_leds.issubset(lit))
         self.assertEqual(len(lit), 81)
-        self.assertTrue(all(pixels.values[index] == (95, 0, 0) for index in SQUARE_TO_LED["a1"]))
+        self.assertEqual(pixels.values[marker_led("a1")], (80, 8, 8))
         self.assertLessEqual(max(max(value) for value in pixels.values), 95)
         self.assertEqual(pixels.show_count, 1)
 
-    def test_dotstar_setup_guidance_keeps_all_missing_squares_red_until_detected(self):
+    def test_dotstar_setup_guidance_uses_dedicated_marker_per_missing_square(self):
         pixels = FakePixels()
         leds = DotStarLedController(pixels)
         leds.apply_settings(LedSettings(enabled=True, brightness=0.1))
@@ -99,7 +103,20 @@ class MemoryLedControllerTest(unittest.TestCase):
         leds.show_setup_guidance(["a1", "b1", "c1"], [], frame=0)
 
         for square in ["a1", "b1", "c1"]:
-            self.assertTrue(all(pixels.values[index] == (95, 0, 0) for index in SQUARE_TO_LED[square]))
+            self.assertEqual(pixels.values[marker_led(square)], (80, 8, 8))
+
+    def test_dotstar_setup_marker_turns_off_when_square_is_no_longer_missing(self):
+        pixels = FakePixels()
+        leds = DotStarLedController(pixels)
+        leds.apply_settings(LedSettings(enabled=True, brightness=0.1))
+
+        leds.show_setup_guidance(["a1", "b1"], [], frame=0)
+        self.assertEqual(pixels.values[marker_led("a1")], (80, 8, 8))
+
+        leds.show_setup_guidance(["b1"], [], frame=1)
+
+        self.assertNotEqual(pixels.values[marker_led("a1")], (80, 8, 8))
+        self.assertEqual(pixels.values[marker_led("b1")], (80, 8, 8))
 
     def test_setup_guidance_cycles_between_multiple_full_board_patterns(self):
         pixels = FakePixels()

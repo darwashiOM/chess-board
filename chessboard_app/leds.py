@@ -12,7 +12,7 @@ from led_mapping import LED_GRID, SQUARE_TO_LED
 
 SETUP_BREATH_PERIOD = 32
 SETUP_PATTERN_PERIOD = 48
-MISSING_COLOR = (95, 0, 0)
+MISSING_COLOR = (80, 8, 8)
 EXTRA_COLOR = (95, 36, 0)
 
 
@@ -201,8 +201,8 @@ class DotStarLedController(MemoryLedController):
 
         self.pixels.fill((0, 0, 0))
         self._render_setup_background(frame)
-        self._set_square_color(missing_squares, MISSING_COLOR)
-        self._set_square_color(extra_squares, EXTRA_COLOR)
+        self._set_square_markers(missing_squares, MISSING_COLOR)
+        self._set_square_markers(extra_squares, EXTRA_COLOR)
         self.pixels.show()
 
     def show_ready_animation(self, delay: float = 0.008) -> None:
@@ -231,6 +231,14 @@ class DotStarLedController(MemoryLedController):
     def _set_square_color(self, squares: Sequence[str], color: tuple[int, int, int]) -> None:
         for square in squares:
             for index in SQUARE_TO_LED.get(square, []):
+                if 0 <= index < self.count:
+                    self.pixels[index] = color
+
+    def _set_square_markers(self, squares: Sequence[str], color: tuple[int, int, int]) -> None:
+        for square in squares:
+            indexes = SQUARE_TO_LED.get(square, [])
+            if indexes:
+                index = min(indexes)
                 if 0 <= index < self.count:
                     self.pixels[index] = color
 
