@@ -14,6 +14,9 @@ SETUP_BREATH_PERIOD = 32
 SETUP_PATTERN_PERIOD = 48
 MISSING_COLOR = (80, 8, 8)
 EXTRA_COLOR = (95, 36, 0)
+LEGAL_TARGET_COLOR = (90, 60, 0)
+MOVE_COLOR = (110, 35, 0)
+READY_COLOR = (90, 30, 0)
 
 
 @dataclass(frozen=True)
@@ -183,12 +186,12 @@ class DotStarLedController(MemoryLedController):
     def show_legal_targets(self, board: chess.Board, from_square: str) -> None:
         super().show_legal_targets(board, from_square)
         if self.settings.enabled:
-            self._light_squares(self.highlighted_squares, (80, 70, 0))
+            self._light_squares(self.highlighted_squares, LEGAL_TARGET_COLOR)
 
     def show_move(self, uci: str) -> None:
         super().show_move(uci)
         if self.settings.enabled:
-            self._light_squares(self.highlighted_squares, (0, 50, 90))
+            self._light_squares(self.highlighted_squares, MOVE_COLOR)
 
     def show_setup_guidance(
         self,
@@ -215,10 +218,10 @@ class DotStarLedController(MemoryLedController):
             return
         for index in range(self.count):
             self.pixels.fill((0, 0, 0))
-            for tail_offset, level in enumerate((1.0, 0.45, 0.18)):
+            for tail_offset, level in enumerate((1.0, 0.5, 0.22, 0.08)):
                 tail_index = index - tail_offset
                 if 0 <= tail_index < self.count:
-                    self.pixels[tail_index] = _scale_color((0, 80, 28), level)
+                    self.pixels[tail_index] = _scale_color(READY_COLOR, level)
             self.pixels.show()
             if delay:
                 time.sleep(delay)
