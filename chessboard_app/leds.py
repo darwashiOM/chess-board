@@ -10,13 +10,10 @@ import chess
 from led_mapping import LED_GRID, SQUARE_TO_LED
 
 
-SETUP_ANIMATION_LEDS = [
-    LED_GRID[row][col]
-    for row in range(3, 6)
-    for col in range(3, 6)
-]
-SETUP_MISSING_WINDOW = 1
 SETUP_BREATH_PERIOD = 32
+SETUP_PATTERN_PERIOD = 48
+MISSING_COLOR = (95, 0, 0)
+EXTRA_COLOR = (95, 36, 0)
 
 
 @dataclass(frozen=True)
@@ -203,13 +200,9 @@ class DotStarLedController(MemoryLedController):
             return
 
         self.pixels.fill((0, 0, 0))
-        breath = _breath_value(frame)
-        center_color = _scale_color((0, 22, 36), breath)
-        for offset, index in enumerate(SETUP_ANIMATION_LEDS):
-            if 0 <= index < self.count:
-                self.pixels[index] = _scale_color(center_color, 0.35 + (offset % 3) * 0.12)
-        self._set_square_color(_rotating_window(missing_squares, frame, SETUP_MISSING_WINDOW), _scale_color((0, 95, 34), breath))
-        self._set_square_color(extra_squares, _scale_color((95, 0, 0), breath))
+        self._render_setup_background(frame)
+        self._set_square_color(missing_squares, MISSING_COLOR)
+        self._set_square_color(extra_squares, EXTRA_COLOR)
         self.pixels.show()
 
     def show_ready_animation(self, delay: float = 0.008) -> None:
@@ -241,19 +234,45 @@ class DotStarLedController(MemoryLedController):
                 if 0 <= index < self.count:
                     self.pixels[index] = color
 
+    def _render_setup_background(self, frame: int) -> None:
+        pattern = (frame // SETUP_PATTERN_PERIOD) % 3
+        if pattern == 0:
+            self._render_diagonal_wave(frame)
+        elif pattern == 1:
+            self._render_soft_scan(frame)
+        else:
+            self._render_comet_field(frame)
+
+    def _render_diagonal_wave(self, frame: int) -> None:
+        for row, grid_row in enumerate(LED_GRID):
+            for col, index in enumerate(grid_row):
+                phase = ((row + col + frame) % 12) / 12
+                glow = 0.18 + 0.82 * ((1 - math.cos(phase * math.tau)) / 2)
+                self.pixels[index] = _scale_color((0, 10, 20), glow)
+
+    def _render_soft_scan(self, frame: int) -> None:
+        scan_col = (frame // 3) % 9
+        for row, grid_row in enumerate(LED_GRID):
+            for col, index in enumerate(grid_row):
+                distance = min(abs(col - scan_col), 9 - abs(col - scan_col))
+                glow = max(0.16, 1 - distance * 0.32)
+                self.pixels[index] = _scale_color((0, 18, 14), glow)
+
+    def _render_comet_field(self, frame: int) -> None:
+        head = frame % self.count
+        for index in range(self.count):
+            distance = (head - index) % self.count
+            if distance <= 5:
+                self.pixels[index] = _scale_color((18, 10, 0), 1 - distance * 0.14)
+            else:
+                self.pixels[index] = (1, 0, 2)
+
     def _light_indexes(self, indexes, color: tuple[int, int, int]) -> None:
         self.pixels.fill((0, 0, 0))
         for index in indexes:
             if 0 <= index < self.count:
                 self.pixels[index] = color
         self.pixels.show()
-
-
-def _rotating_window(values: Sequence[str], frame: int, size: int) -> list[str]:
-    if not values or size <= 0:
-        return []
-    start = (frame // 8) % len(values)
-    return [values[(start + offset) % len(values)] for offset in range(min(size, len(values)))]
 
 
 def _breath_value(frame: int) -> float:

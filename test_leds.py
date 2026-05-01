@@ -76,7 +76,7 @@ class MemoryLedControllerTest(unittest.TestCase):
         self.assertEqual(leds.extra_squares, ["e4"])
         self.assertEqual(leds.setup_frame, 3)
 
-    def test_dotstar_setup_guidance_only_animates_center_and_problem_squares(self):
+    def test_dotstar_setup_guidance_uses_full_board_animation_with_solid_problem_squares(self):
         pixels = FakePixels()
         leds = DotStarLedController(pixels)
         leds.apply_settings(LedSettings(enabled=True, brightness=0.1))
@@ -86,32 +86,33 @@ class MemoryLedControllerTest(unittest.TestCase):
         lit = {index for index, value in enumerate(pixels.values) if value != (0, 0, 0)}
         expected_problem_leds = set(SQUARE_TO_LED["a1"]) | set(SQUARE_TO_LED["h8"])
         self.assertTrue(expected_problem_leds.issubset(lit))
-        self.assertLess(len(lit), 30)
+        self.assertEqual(len(lit), 81)
+        self.assertTrue(all(pixels.values[index] == (95, 0, 0) for index in SQUARE_TO_LED["a1"]))
         self.assertLessEqual(max(max(value) for value in pixels.values), 95)
         self.assertEqual(pixels.show_count, 1)
 
-    def test_dotstar_setup_guidance_rotates_missing_squares_to_reduce_shared_corner_confusion(self):
+    def test_dotstar_setup_guidance_keeps_all_missing_squares_red_until_detected(self):
         pixels = FakePixels()
         leds = DotStarLedController(pixels)
         leds.apply_settings(LedSettings(enabled=True, brightness=0.1))
 
         leds.show_setup_guidance(["a1", "b1", "c1"], [], frame=0)
 
-        lit = {index for index, value in enumerate(pixels.values) if value != (0, 0, 0)}
-        self.assertTrue(set(SQUARE_TO_LED["a1"]).issubset(lit))
-        self.assertFalse(set(SQUARE_TO_LED["c1"]).issubset(lit))
+        for square in ["a1", "b1", "c1"]:
+            self.assertTrue(all(pixels.values[index] == (95, 0, 0) for index in SQUARE_TO_LED[square]))
 
-    def test_setup_guidance_breathes_missing_square_on_and_off(self):
+    def test_setup_guidance_cycles_between_multiple_full_board_patterns(self):
         pixels = FakePixels()
         leds = DotStarLedController(pixels)
         leds.apply_settings(LedSettings(enabled=True, brightness=0.1))
 
-        leds.show_setup_guidance(["a1"], [], frame=0)
-        dim_value = max(pixels.values[index][1] for index in SQUARE_TO_LED["a1"])
-        leds.show_setup_guidance(["a1"], [], frame=16)
-        bright_value = max(pixels.values[index][1] for index in SQUARE_TO_LED["a1"])
+        leds.show_setup_guidance([], [], frame=0)
+        first_pattern = list(pixels.values)
+        leds.show_setup_guidance([], [], frame=64)
+        second_pattern = list(pixels.values)
 
-        self.assertLess(dim_value, bright_value)
+        self.assertNotEqual(first_pattern, second_pattern)
+        self.assertEqual(len({value for value in first_pattern if value != (0, 0, 0)}) > 1, True)
 
     def test_ready_animation_chases_first_to_last_led_and_clears(self):
         pixels = FakePixels()
