@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import math
 import time
 from typing import Sequence
 
@@ -15,6 +16,7 @@ SETUP_ANIMATION_LEDS = [
     for col in range(3, 6)
 ]
 SETUP_MISSING_WINDOW = 1
+SETUP_BREATH_PERIOD = 32
 
 
 @dataclass(frozen=True)
@@ -200,20 +202,14 @@ class DotStarLedController(MemoryLedController):
             self.clear()
             return
 
-        center_palette = [
-            (0, 0, 35),
-            (0, 20, 60),
-            (0, 60, 45),
-            (55, 45, 0),
-            (70, 10, 0),
-            (45, 0, 55),
-        ]
         self.pixels.fill((0, 0, 0))
+        breath = _breath_value(frame)
+        center_color = _scale_color((0, 22, 36), breath)
         for offset, index in enumerate(SETUP_ANIMATION_LEDS):
             if 0 <= index < self.count:
-                self.pixels[index] = center_palette[(offset + frame) % len(center_palette)]
-        self._set_square_color(_rotating_window(missing_squares, frame, SETUP_MISSING_WINDOW), (0, 120, 40))
-        self._set_square_color(extra_squares, (120, 0, 0))
+                self.pixels[index] = _scale_color(center_color, 0.35 + (offset % 3) * 0.12)
+        self._set_square_color(_rotating_window(missing_squares, frame, SETUP_MISSING_WINDOW), _scale_color((0, 95, 34), breath))
+        self._set_square_color(extra_squares, _scale_color((95, 0, 0), breath))
         self.pixels.show()
 
     def show_ready_animation(self, delay: float = 0.008) -> None:
@@ -223,7 +219,10 @@ class DotStarLedController(MemoryLedController):
             return
         for index in range(self.count):
             self.pixels.fill((0, 0, 0))
-            self.pixels[index] = (0, 90, 35)
+            for tail_offset, level in enumerate((1.0, 0.45, 0.18)):
+                tail_index = index - tail_offset
+                if 0 <= tail_index < self.count:
+                    self.pixels[tail_index] = _scale_color((0, 80, 28), level)
             self.pixels.show()
             if delay:
                 time.sleep(delay)
@@ -255,3 +254,12 @@ def _rotating_window(values: Sequence[str], frame: int, size: int) -> list[str]:
         return []
     start = (frame // 8) % len(values)
     return [values[(start + offset) % len(values)] for offset in range(min(size, len(values)))]
+
+
+def _breath_value(frame: int) -> float:
+    phase = (frame % SETUP_BREATH_PERIOD) / SETUP_BREATH_PERIOD
+    return 0.18 + 0.82 * ((1 - math.cos(phase * math.tau)) / 2)
+
+
+def _scale_color(color: tuple[int, int, int], scale: float) -> tuple[int, int, int]:
+    return tuple(max(0, min(255, int(channel * scale))) for channel in color)

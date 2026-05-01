@@ -87,6 +87,7 @@ class MemoryLedControllerTest(unittest.TestCase):
         expected_problem_leds = set(SQUARE_TO_LED["a1"]) | set(SQUARE_TO_LED["h8"])
         self.assertTrue(expected_problem_leds.issubset(lit))
         self.assertLess(len(lit), 30)
+        self.assertLessEqual(max(max(value) for value in pixels.values), 95)
         self.assertEqual(pixels.show_count, 1)
 
     def test_dotstar_setup_guidance_rotates_missing_squares_to_reduce_shared_corner_confusion(self):
@@ -99,6 +100,18 @@ class MemoryLedControllerTest(unittest.TestCase):
         lit = {index for index, value in enumerate(pixels.values) if value != (0, 0, 0)}
         self.assertTrue(set(SQUARE_TO_LED["a1"]).issubset(lit))
         self.assertFalse(set(SQUARE_TO_LED["c1"]).issubset(lit))
+
+    def test_setup_guidance_breathes_missing_square_on_and_off(self):
+        pixels = FakePixels()
+        leds = DotStarLedController(pixels)
+        leds.apply_settings(LedSettings(enabled=True, brightness=0.1))
+
+        leds.show_setup_guidance(["a1"], [], frame=0)
+        dim_value = max(pixels.values[index][1] for index in SQUARE_TO_LED["a1"])
+        leds.show_setup_guidance(["a1"], [], frame=16)
+        bright_value = max(pixels.values[index][1] for index in SQUARE_TO_LED["a1"])
+
+        self.assertLess(dim_value, bright_value)
 
     def test_ready_animation_chases_first_to_last_led_and_clears(self):
         pixels = FakePixels()
