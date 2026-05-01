@@ -118,6 +118,19 @@ class MemoryLedControllerTest(unittest.TestCase):
         self.assertNotEqual(pixels.values[marker_led("a1")], (80, 8, 8))
         self.assertEqual(pixels.values[marker_led("b1")], (80, 8, 8))
 
+    def test_dotstar_setup_marker_returns_as_constant_light_red_when_magnet_is_removed_again(self):
+        pixels = FakePixels()
+        leds = DotStarLedController(pixels)
+        leds.apply_settings(LedSettings(enabled=True, brightness=0.1))
+
+        leds.show_setup_guidance(["b1"], [], frame=5)
+        self.assertNotEqual(pixels.values[marker_led("a1")], (80, 8, 8))
+
+        leds.show_setup_guidance(["a1", "b1"], [], frame=80)
+
+        self.assertEqual(pixels.values[marker_led("a1")], (80, 8, 8))
+        self.assertEqual(pixels.values[marker_led("b1")], (80, 8, 8))
+
     def test_setup_guidance_cycles_between_multiple_full_board_patterns(self):
         pixels = FakePixels()
         leds = DotStarLedController(pixels)
@@ -130,6 +143,16 @@ class MemoryLedControllerTest(unittest.TestCase):
 
         self.assertNotEqual(first_pattern, second_pattern)
         self.assertEqual(len({value for value in first_pattern if value != (0, 0, 0)}) > 1, True)
+
+    def test_setup_background_uses_warm_colors(self):
+        pixels = FakePixels()
+        leds = DotStarLedController(pixels)
+        leds.apply_settings(LedSettings(enabled=True, brightness=0.1))
+
+        for frame in [0, 64, 128]:
+            leds.show_setup_guidance([], [], frame=frame)
+            for red, green, blue in pixels.values:
+                self.assertGreaterEqual(red + green, blue)
 
     def test_ready_animation_chases_first_to_last_led_and_clears(self):
         pixels = FakePixels()

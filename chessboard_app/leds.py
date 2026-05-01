@@ -256,7 +256,7 @@ class DotStarLedController(MemoryLedController):
             for col, index in enumerate(grid_row):
                 phase = ((row + col + frame) % 12) / 12
                 glow = 0.18 + 0.82 * ((1 - math.cos(phase * math.tau)) / 2)
-                self.pixels[index] = _scale_color((0, 10, 20), glow)
+                self.pixels[index] = _scale_color((26, 12, 2), glow)
 
     def _render_soft_scan(self, frame: int) -> None:
         scan_col = (frame // 3) % 9
@@ -264,16 +264,16 @@ class DotStarLedController(MemoryLedController):
             for col, index in enumerate(grid_row):
                 distance = min(abs(col - scan_col), 9 - abs(col - scan_col))
                 glow = max(0.16, 1 - distance * 0.32)
-                self.pixels[index] = _scale_color((0, 18, 14), glow)
+                self.pixels[index] = _scale_color((28, 16, 4), glow)
 
     def _render_comet_field(self, frame: int) -> None:
         head = frame % self.count
         for index in range(self.count):
             distance = (head - index) % self.count
             if distance <= 5:
-                self.pixels[index] = _scale_color((18, 10, 0), 1 - distance * 0.14)
+                self.pixels[index] = _scale_color((34, 14, 1), 1 - distance * 0.14)
             else:
-                self.pixels[index] = (1, 0, 2)
+                self.pixels[index] = (2, 1, 0)
 
     def _light_indexes(self, indexes, color: tuple[int, int, int]) -> None:
         self.pixels.fill((0, 0, 0))
