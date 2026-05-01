@@ -69,10 +69,10 @@ class MemoryLedControllerTest(unittest.TestCase):
         leds = MemoryLedController()
         leds.apply_settings(LedSettings(enabled=True, brightness=0.1))
 
-        leds.show_setup_guidance(["e2", "d2"], ["e4"], frame=3)
+        leds.show_setup_guidance(["e2", "d2", "c2"], ["e4"], frame=3)
 
         self.assertEqual(leds.mode, "setup")
-        self.assertEqual(leds.highlighted_squares, ["e2", "d2"])
+        self.assertEqual(leds.highlighted_squares, ["e2", "d2", "c2"])
         self.assertEqual(leds.extra_squares, ["e4"])
         self.assertEqual(leds.setup_frame, 3)
 
@@ -88,6 +88,17 @@ class MemoryLedControllerTest(unittest.TestCase):
         self.assertTrue(expected_problem_leds.issubset(lit))
         self.assertLess(len(lit), 30)
         self.assertEqual(pixels.show_count, 1)
+
+    def test_dotstar_setup_guidance_rotates_missing_squares_to_reduce_shared_corner_confusion(self):
+        pixels = FakePixels()
+        leds = DotStarLedController(pixels)
+        leds.apply_settings(LedSettings(enabled=True, brightness=0.1))
+
+        leds.show_setup_guidance(["a1", "b1", "c1"], [], frame=0)
+
+        lit = {index for index, value in enumerate(pixels.values) if value != (0, 0, 0)}
+        self.assertTrue(set(SQUARE_TO_LED["a1"]).issubset(lit))
+        self.assertFalse(set(SQUARE_TO_LED["c1"]).issubset(lit))
 
     def test_ready_animation_chases_first_to_last_led_and_clears(self):
         pixels = FakePixels()

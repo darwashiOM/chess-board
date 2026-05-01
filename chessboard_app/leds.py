@@ -14,6 +14,7 @@ SETUP_ANIMATION_LEDS = [
     for row in range(3, 6)
     for col in range(3, 6)
 ]
+SETUP_MISSING_WINDOW = 1
 
 
 @dataclass(frozen=True)
@@ -211,7 +212,7 @@ class DotStarLedController(MemoryLedController):
         for offset, index in enumerate(SETUP_ANIMATION_LEDS):
             if 0 <= index < self.count:
                 self.pixels[index] = center_palette[(offset + frame) % len(center_palette)]
-        self._set_square_color(missing_squares, (0, 120, 40))
+        self._set_square_color(_rotating_window(missing_squares, frame, SETUP_MISSING_WINDOW), (0, 120, 40))
         self._set_square_color(extra_squares, (120, 0, 0))
         self.pixels.show()
 
@@ -247,3 +248,10 @@ class DotStarLedController(MemoryLedController):
             if 0 <= index < self.count:
                 self.pixels[index] = color
         self.pixels.show()
+
+
+def _rotating_window(values: Sequence[str], frame: int, size: int) -> list[str]:
+    if not values or size <= 0:
+        return []
+    start = (frame // 8) % len(values)
+    return [values[(start + offset) % len(values)] for offset in range(min(size, len(values)))]
