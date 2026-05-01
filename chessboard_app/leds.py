@@ -36,6 +36,14 @@ class DisabledLedController:
     def show_move(self, uci: str) -> None:
         self.test_pattern = "move"
 
+    def show_setup_guidance(
+        self,
+        missing_squares: Sequence[str],
+        extra_squares: Sequence[str],
+        frame: int = 0,
+    ) -> None:
+        self.test_pattern = "setup"
+
     def status(self) -> dict[str, object]:
         return {
             "available": False,
@@ -51,18 +59,23 @@ class MemoryLedController(DisabledLedController):
         super().__init__()
         self.mode = "idle"
         self.highlighted_squares: list[str] = []
+        self.extra_squares: list[str] = []
+        self.setup_frame = 0
 
     def clear(self) -> None:
         self.mode = "idle"
         self.highlighted_squares = []
+        self.extra_squares = []
 
     def run_test(self, pattern: str) -> None:
         super().run_test(pattern)
         self.mode = pattern
         self.highlighted_squares = []
+        self.extra_squares = []
 
     def show_legal_targets(self, board: chess.Board, from_square: str) -> None:
         self.mode = "legal-targets"
+        self.extra_squares = []
         source = chess.parse_square(from_square)
         self.highlighted_squares = [
             chess.square_name(move.to_square)
@@ -72,7 +85,19 @@ class MemoryLedController(DisabledLedController):
 
     def show_move(self, uci: str) -> None:
         self.mode = "move"
+        self.extra_squares = []
         self.highlighted_squares = [uci[:2], uci[2:4]]
+
+    def show_setup_guidance(
+        self,
+        missing_squares: Sequence[str],
+        extra_squares: Sequence[str],
+        frame: int = 0,
+    ) -> None:
+        self.mode = "setup"
+        self.highlighted_squares = list(missing_squares)
+        self.extra_squares = list(extra_squares)
+        self.setup_frame = frame
 
     def status(self) -> dict[str, object]:
         return {
@@ -82,6 +107,7 @@ class MemoryLedController(DisabledLedController):
             "mode": self.mode,
             "testPattern": self.test_pattern,
             "highlightedSquares": self.highlighted_squares,
+            "extraSquares": self.extra_squares,
         }
 
 
@@ -146,11 +172,42 @@ class DotStarLedController(MemoryLedController):
         if self.settings.enabled:
             self._light_squares(self.highlighted_squares, (0, 50, 90))
 
+    def show_setup_guidance(
+        self,
+        missing_squares: Sequence[str],
+        extra_squares: Sequence[str],
+        frame: int = 0,
+    ) -> None:
+        super().show_setup_guidance(missing_squares, extra_squares, frame)
+        if not self.settings.enabled:
+            self.clear()
+            return
+
+        palette = [
+            (10, 0, 45),
+            (0, 18, 55),
+            (0, 45, 35),
+            (35, 45, 0),
+            (55, 16, 0),
+            (38, 0, 48),
+        ]
+        for index in range(self.count):
+            self.pixels[index] = palette[(index + frame) % len(palette)]
+        self._set_square_color(missing_squares, (0, 120, 40))
+        self._set_square_color(extra_squares, (120, 0, 0))
+        self.pixels.show()
+
     def _light_squares(self, squares: Sequence[str], color: tuple[int, int, int]) -> None:
         indexes = []
         for square in squares:
             indexes.extend(SQUARE_TO_LED.get(square, []))
         self._light_indexes(indexes, color)
+
+    def _set_square_color(self, squares: Sequence[str], color: tuple[int, int, int]) -> None:
+        for square in squares:
+            for index in SQUARE_TO_LED.get(square, []):
+                if 0 <= index < self.count:
+                    self.pixels[index] = color
 
     def _light_indexes(self, indexes, color: tuple[int, int, int]) -> None:
         self.pixels.fill((0, 0, 0))

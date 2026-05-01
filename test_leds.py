@@ -48,6 +48,17 @@ class MemoryLedControllerTest(unittest.TestCase):
         self.assertEqual(leds.mode, "move")
         self.assertEqual(leds.highlighted_squares, ["e7", "e5"])
 
+    def test_setup_guidance_tracks_missing_and_extra_squares(self):
+        leds = MemoryLedController()
+        leds.apply_settings(LedSettings(enabled=True, brightness=0.1))
+
+        leds.show_setup_guidance(["e2", "d2"], ["e4"], frame=3)
+
+        self.assertEqual(leds.mode, "setup")
+        self.assertEqual(leds.highlighted_squares, ["e2", "d2"])
+        self.assertEqual(leds.extra_squares, ["e4"])
+        self.assertEqual(leds.setup_frame, 3)
+
 
 if __name__ == "__main__":
     unittest.main()
