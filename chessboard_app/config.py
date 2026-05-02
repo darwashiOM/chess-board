@@ -5,6 +5,9 @@ import json
 import os
 from pathlib import Path
 from typing import Any
+from urllib import parse
+
+from .lichess_scopes import LICHESS_SCOPES
 
 
 @dataclass
@@ -15,6 +18,7 @@ class AppConfig:
     board_orientation: str = "white"
     leds_enabled: bool = False
     led_brightness: float = 0.1
+    test_mode: bool = False
 
 
 class AppConfigStore:
@@ -60,6 +64,7 @@ class AppConfigStore:
         board_orientation: str | None = None,
         device_name: str | None = None,
         led_brightness: float | None = None,
+        test_mode: bool | None = None,
     ) -> AppConfig:
         config = self.load()
         if leds_enabled is not None:
@@ -78,17 +83,21 @@ class AppConfigStore:
             if brightness < 0 or brightness > 1:
                 raise ValueError("led_brightness must be between 0 and 1")
             config.led_brightness = brightness
+        if test_mode is not None:
+            config.test_mode = bool(test_mode)
         self.save(config)
         return config
 
     def public_state(self) -> dict[str, Any]:
         config = self.load()
+        token_query = parse.urlencode([("scopes[]", scope) for scope in LICHESS_SCOPES])
         return {
             "deviceName": config.device_name,
             "boardOrientation": config.board_orientation,
             "ledsEnabled": config.leds_enabled,
             "ledBrightness": config.led_brightness,
-            "lichessTokenUrl": "https://lichess.org/account/oauth/token/create?scopes[]=board:play",
+            "testMode": config.test_mode,
+            "lichessTokenUrl": f"https://lichess.org/account/oauth/token/create?{token_query}",
             "lichess": {
                 "connected": config.lichess_token is not None,
                 "username": config.lichess_username,

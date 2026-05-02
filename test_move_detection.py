@@ -71,6 +71,30 @@ class MoveDetectionTest(unittest.TestCase):
         self.assertEqual(result.kind, "illegal")
         self.assertIsNone(result.uci)
 
+    def test_detects_move_from_partial_test_baseline_when_unsynced_allowed(self):
+        board = chess.Board()
+        before = {square: False for square in chess.SQUARE_NAMES}
+        before["e2"] = True
+        after = dict(before)
+        after["e2"] = False
+        after["e4"] = True
+
+        result = detect_move(board, before, after, allow_unsynced=True)
+
+        self.assertEqual(result, MoveDetectionResult("move", "e2e4", None))
+
+    def test_still_requires_sync_by_default(self):
+        board = chess.Board()
+        before = {square: False for square in chess.SQUARE_NAMES}
+        before["e2"] = True
+        after = dict(before)
+        after["e2"] = False
+        after["e4"] = True
+
+        result = detect_move(board, before, after)
+
+        self.assertEqual(result.kind, "sync_required")
+
 
 if __name__ == "__main__":
     unittest.main()

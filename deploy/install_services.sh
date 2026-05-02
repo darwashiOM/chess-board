@@ -7,7 +7,7 @@ if [ ! -d .venv ]; then
   python3 -m venv .venv
 fi
 
-.venv/bin/python -m pip install -r requirements.txt
+.venv/bin/python3 -m pip install -r requirements.txt
 
 sudo cp deploy/systemd/chessboard-hotspot.service /etc/systemd/system/chessboard-hotspot.service
 sudo cp deploy/systemd/chessboard.service /etc/systemd/system/chessboard.service

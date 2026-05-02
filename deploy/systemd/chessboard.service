@@ -8,7 +8,7 @@ Type=simple
 User=root
 WorkingDirectory=/home/pi/Desktop/chess-board
 Environment=PATH=/home/pi/Desktop/chess-board/.venv/bin:/usr/local/bin:/usr/bin:/bin
-ExecStart=/home/pi/Desktop/chess-board/.venv/bin/python /home/pi/Desktop/chess-board/run_server.py --hardware --host 0.0.0.0 --port 8000
+ExecStart=/home/pi/Desktop/chess-board/.venv/bin/python3 /home/pi/Desktop/chess-board/run_server.py --hardware --host 0.0.0.0 --port 8000
 Restart=always
 RestartSec=3
 

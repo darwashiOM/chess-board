@@ -8,7 +8,7 @@ Type=simple
 User=pi
 Environment=DISPLAY=:0
 Environment=XAUTHORITY=/home/pi/.Xauthority
-ExecStart=/bin/sh -c 'until /usr/bin/python3 -c "import urllib.request; urllib.request.urlopen(\"http://127.0.0.1:8000/api/state\", timeout=1)" >/dev/null 2>&1; do sleep 1; done; exec /usr/bin/chromium-browser --kiosk --start-fullscreen --noerrdialogs --disable-infobars --disable-session-crashed-bubble --disable-features=TranslateUI --check-for-update-interval=31536000 http://127.0.0.1:8000'
+ExecStart=/bin/sh -c 'until /usr/bin/curl --fail --silent --max-time 1 http://127.0.0.1:8000/api/state >/dev/null; do sleep 1; done; exec /usr/bin/chromium-browser --user-data-dir=/home/pi/.config/chessboard-kiosk --password-store=basic --use-mock-keychain --kiosk --start-fullscreen --noerrdialogs --disable-infobars --disable-session-crashed-bubble --disable-features=TranslateUI --check-for-update-interval=31536000 http://127.0.0.1:8000'
 Restart=always
 RestartSec=3
 

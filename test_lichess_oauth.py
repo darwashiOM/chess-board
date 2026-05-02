@@ -4,6 +4,32 @@ from urllib.parse import parse_qs, urlparse
 from chessboard_app.lichess_oauth import LichessOAuth, OAuthSession
 
 
+FULL_LICHESS_SCOPES = [
+    "preference:read",
+    "preference:write",
+    "email:read",
+    "engine:read",
+    "engine:write",
+    "challenge:read",
+    "challenge:write",
+    "challenge:bulk",
+    "study:read",
+    "study:write",
+    "tournament:write",
+    "racer:write",
+    "puzzle:read",
+    "puzzle:write",
+    "team:read",
+    "team:write",
+    "team:lead",
+    "follow:read",
+    "follow:write",
+    "msg:write",
+    "board:play",
+    "bot:play",
+]
+
+
 class FakeResponse:
     def __init__(self, status_code=200, data=None, text=""):
         self.status_code = status_code
@@ -38,7 +64,7 @@ class LichessOAuthTest(unittest.TestCase):
         self.assertEqual(query["client_id"], ["chessboard-test"])
         self.assertEqual(query["redirect_uri"], ["http://pi.local/auth/lichess/callback"])
         self.assertEqual(query["code_challenge_method"], ["S256"])
-        self.assertEqual(query["scope"], ["board:play puzzle:read puzzle:write"])
+        self.assertEqual(query["scope"], [" ".join(FULL_LICHESS_SCOPES)])
         self.assertEqual(query["state"], [session.state])
 
     def test_finish_exchanges_code_for_access_token(self):

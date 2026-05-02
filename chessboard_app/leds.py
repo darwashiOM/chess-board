@@ -1,29 +1,40 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-import math
 import time
 from typing import Sequence
 
 import chess
 
+from chessboard_app.orientation import orient_square
 from led_mapping import LED_GRID, SQUARE_TO_LED
 
 
 SETUP_BREATH_PERIOD = 32
 SETUP_PATTERN_PERIOD = 48
-MISSING_COLOR = (200, 14, 6)
-EXTRA_COLOR = (220, 90, 0)
-WARM_GLOW_COLOR = (220, 90, 12)
-LEGAL_TARGET_COLOR = (160, 140, 0)
-MOVE_COLOR = (0, 80, 180)
+MISSING_COLOR = (6, 14, 200)
+EXTRA_COLOR = (80, 0, 0)
+EXTRA_DIM_COLOR = (40, 0, 0)
+CORRECT_SETUP_COLOR = (0, 45, 140)
+WARM_GLOW_COLOR = (12, 90, 220)
+WHITE_PIECE_COLOR = (220, 0, 180)
+BLACK_PIECE_COLOR = (0, 120, 0)
+SHARED_LED_COLOR = (0, 0, 160)
+WHITE_PLACED_COLOR = (180, 100, 150)
+BLACK_PLACED_COLOR = WHITE_PLACED_COLOR
+LEGAL_SOURCE_COLOR = WHITE_PIECE_COLOR
+DESTINATION_COLOR = (120, 0, 0)
+LEGAL_TARGET_COLOR = DESTINATION_COLOR
+MOVE_COLOR = DESTINATION_COLOR
 READY_COLOR = (0, 120, 40)
+CLEAR_FRAME_REPEATS = 3
 
 
 @dataclass(frozen=True)
 class LedSettings:
     enabled: bool = False
     brightness: float = 0.1
+    orientation: str = "white"
 
 
 class DisabledLedController:
@@ -54,6 +65,8 @@ class DisabledLedController:
         extra_squares: Sequence[str],
         frame: int = 0,
         occupied_squares: Sequence[str] | None = None,
+        expected_board: chess.Board | None = None,
+        expected_player_color: str | None = None,
     ) -> None:
         self.test_pattern = "setup"
 
@@ -110,6 +123,8 @@ class MemoryLedController(DisabledLedController):
         extra_squares: Sequence[str],
         frame: int = 0,
         occupied_squares: Sequence[str] | None = None,
+        expected_board: chess.Board | None = None,
+        expected_player_color: str | None = None,
     ) -> None:
         self.mode = "setup"
         self.highlighted_squares = list(missing_squares)
@@ -161,8 +176,12 @@ class DotStarLedController(MemoryLedController):
 
     def clear(self) -> None:
         super().clear()
+        self._clear_pixels()
+
+    def _clear_pixels(self, repeats: int = CLEAR_FRAME_REPEATS) -> None:
         self.pixels.fill((0, 0, 0))
-        self.pixels.show()
+        for _ in range(repeats):
+            self.pixels.show()
 
     def run_test(self, pattern: str) -> None:
         super().run_test(pattern)
@@ -172,7 +191,7 @@ class DotStarLedController(MemoryLedController):
         if pattern == "idle":
             self.clear()
         elif pattern == "all":
-            self._light_indexes(range(self.count), (0, 0, 80))
+            self._light_indexes(range(self.count), EXTRA_COLOR)
         elif pattern == "border":
             border = set()
             for row in (0, 8):
@@ -187,12 +206,18 @@ class DotStarLedController(MemoryLedController):
     def show_legal_targets(self, board: chess.Board, from_square: str) -> None:
         super().show_legal_targets(board, from_square)
         if self.settings.enabled:
-            self._light_squares(self.highlighted_squares, LEGAL_TARGET_COLOR)
+            self.pixels.fill((0, 0, 0))
+            self._set_square_color(self.highlighted_squares, DESTINATION_COLOR)
+            self._set_square_color([from_square], LEGAL_SOURCE_COLOR)
+            self.pixels.show()
 
     def show_move(self, uci: str) -> None:
         super().show_move(uci)
         if self.settings.enabled:
-            self._light_squares(self.highlighted_squares, MOVE_COLOR)
+            self.pixels.fill((0, 0, 0))
+            self._set_square_color([uci[:2]], LEGAL_SOURCE_COLOR)
+            self._set_square_color([uci[2:4]], DESTINATION_COLOR)
+            self.pixels.show()
 
     def show_setup_guidance(
         self,
@@ -200,22 +225,29 @@ class DotStarLedController(MemoryLedController):
         extra_squares: Sequence[str],
         frame: int = 0,
         occupied_squares: Sequence[str] | None = None,
+        expected_board: chess.Board | None = None,
+        expected_player_color: str | None = None,
     ) -> None:
-        super().show_setup_guidance(missing_squares, extra_squares, frame, occupied_squares)
+        super().show_setup_guidance(
+            missing_squares,
+            extra_squares,
+            frame,
+            occupied_squares,
+            expected_board,
+            expected_player_color,
+        )
         if not self.settings.enabled:
             self.clear()
             return
 
         self.pixels.fill((0, 0, 0))
-        phase = (frame % SETUP_BREATH_PERIOD) / SETUP_BREATH_PERIOD
-        glow = 0.35 + 0.65 * ((1 - math.cos(phase * math.tau)) / 2)
-        warm = _scale_color(WARM_GLOW_COLOR, glow)
-        for square in occupied_squares or []:
-            for index in SQUARE_TO_LED.get(square, []):
-                if 0 <= index < self.count:
-                    self.pixels[index] = warm
-        self._set_square_markers(missing_squares, MISSING_COLOR)
-        self._set_square_markers(extra_squares, EXTRA_COLOR)
+        self._set_setup_expected_squares(
+            occupied_squares or [],
+            missing_squares,
+            expected_board,
+            expected_player_color,
+        )
+        self._set_square_color(extra_squares, EXTRA_COLOR)
         self.pixels.show()
 
     def show_ready_animation(self, delay: float = 0.008) -> None:
@@ -238,64 +270,107 @@ class DotStarLedController(MemoryLedController):
     def _light_squares(self, squares: Sequence[str], color: tuple[int, int, int]) -> None:
         indexes = []
         for square in squares:
-            indexes.extend(SQUARE_TO_LED.get(square, []))
+            indexes.extend(SQUARE_TO_LED.get(self._physical_square(square), []))
         self._light_indexes(indexes, color)
 
     def _set_square_color(self, squares: Sequence[str], color: tuple[int, int, int]) -> None:
         for square in squares:
-            for index in SQUARE_TO_LED.get(square, []):
+            for index in SQUARE_TO_LED.get(self._physical_square(square), []):
                 if 0 <= index < self.count:
                     self.pixels[index] = color
 
     def _set_square_markers(self, squares: Sequence[str], color: tuple[int, int, int]) -> None:
         for square in squares:
-            index = _square_marker(square)
+            index = _square_marker(self._physical_square(square))
             if index is not None and 0 <= index < self.count:
                 self.pixels[index] = color
 
-    def _render_setup_background(self, frame: int, occupied_squares: Sequence[str]) -> None:
-        pattern = (frame // SETUP_PATTERN_PERIOD) % 3
-        if pattern == 0:
-            self._render_diagonal_wave(frame, occupied_squares)
-        elif pattern == 1:
-            self._render_soft_scan(frame, occupied_squares)
-        else:
-            self._render_comet_field(frame, occupied_squares)
-
-    def _render_diagonal_wave(self, frame: int, occupied_squares: Sequence[str]) -> None:
-        for square in occupied_squares:
-            index = _square_marker(square)
-            if index is None:
-                continue
-            row = index // 9
-            col = index % 9
-            phase = ((row + col + frame) % 12) / 12
-            glow = 0.18 + 0.82 * ((1 - math.cos(phase * math.tau)) / 2)
-            self.pixels[index] = _scale_color((26, 12, 2), glow)
-
-    def _render_soft_scan(self, frame: int, occupied_squares: Sequence[str]) -> None:
-        scan_col = (frame // 3) % 9
-        for square in occupied_squares:
-            index = _square_marker(square)
-            if index is None:
-                continue
-            col = index % 9
-            distance = min(abs(col - scan_col), 9 - abs(col - scan_col))
-            glow = max(0.16, 1 - distance * 0.32)
-            self.pixels[index] = _scale_color((28, 16, 4), glow)
-
-    def _render_comet_field(self, frame: int, occupied_squares: Sequence[str]) -> None:
-        occupied_markers = [_square_marker(square) for square in occupied_squares]
-        occupied_markers = [index for index in occupied_markers if index is not None]
-        if not occupied_markers:
+    def _set_correct_setup_squares(
+        self,
+        occupied_squares: Sequence[str],
+        expected_board: chess.Board | None,
+    ) -> None:
+        if expected_board is None:
             return
-        head_position = frame % len(occupied_markers)
-        for position, index in enumerate(occupied_markers):
-            distance = (head_position - position) % len(occupied_markers)
-            if distance <= 3:
-                self.pixels[index] = _scale_color((34, 14, 1), 1 - distance * 0.2)
-            else:
-                self.pixels[index] = (2, 1, 0)
+        expected = {
+            chess.square_name(square)
+            for square in expected_board.piece_map().keys()
+        }
+        for square in occupied_squares:
+            if square not in expected:
+                continue
+            color = _expected_placed_color(expected_board, square)
+            self._set_square_color([square], color or CORRECT_SETUP_COLOR)
+
+    def _set_setup_expected_squares(
+        self,
+        occupied_squares: Sequence[str],
+        missing_squares: Sequence[str],
+        expected_board: chess.Board | None,
+        expected_player_color: str | None = None,
+    ) -> None:
+        colors_by_led: dict[int, list[tuple[int, int, int]]] = {}
+        expected = set()
+        if expected_board is not None:
+            expected = {
+                chess.square_name(square)
+                for square in expected_board.piece_map().keys()
+            }
+
+        for square in occupied_squares:
+            if square not in expected:
+                continue
+            color = _expected_placed_color(expected_board, square) or CORRECT_SETUP_COLOR
+            self._queue_square_led_colors(colors_by_led, square, color)
+
+        for square in missing_squares:
+            color = _expected_piece_color(expected_board, square, expected_player_color)
+            if color is None:
+                color = WARM_GLOW_COLOR
+            self._queue_square_led_colors(colors_by_led, square, color)
+
+        for index, colors in colors_by_led.items():
+            self.pixels[index] = _merged_led_color(colors)
+
+    def _set_missing_setup_squares(
+        self,
+        missing_squares: Sequence[str],
+        expected_board: chess.Board | None,
+        expected_player_color: str | None = None,
+    ) -> None:
+        for square in missing_squares:
+            color = _expected_piece_color(expected_board, square, expected_player_color)
+            if color is None:
+                color = WARM_GLOW_COLOR
+            self._set_square_color([square], color)
+
+    def _set_expected_piece_squares(
+        self,
+        occupied_squares: Sequence[str],
+        expected_board: chess.Board | None,
+        expected_player_color: str | None = None,
+    ) -> None:
+        led_colors: dict[int, list[tuple[int, int, int]]] = {}
+        for square in occupied_squares:
+            color = _expected_piece_color(expected_board, square, expected_player_color)
+            if color is None:
+                color = _scale_color(WARM_GLOW_COLOR, 0.5)
+            self._queue_square_led_colors(led_colors, square, color)
+        for index, colors in led_colors.items():
+            self.pixels[index] = _merged_led_color(colors)
+
+    def _queue_square_led_colors(
+        self,
+        led_colors: dict[int, list[tuple[int, int, int]]],
+        square: str,
+        color: tuple[int, int, int],
+    ) -> None:
+        for index in SQUARE_TO_LED.get(self._physical_square(square), []):
+            if 0 <= index < self.count:
+                led_colors.setdefault(index, []).append(color)
+
+    def _physical_square(self, square: str) -> str:
+        return orient_square(square, getattr(self.settings, "orientation", "white"))
 
     def _light_indexes(self, indexes, color: tuple[int, int, int]) -> None:
         self.pixels.fill((0, 0, 0))
@@ -305,13 +380,42 @@ class DotStarLedController(MemoryLedController):
         self.pixels.show()
 
 
-def _breath_value(frame: int) -> float:
-    phase = (frame % SETUP_BREATH_PERIOD) / SETUP_BREATH_PERIOD
-    return 0.18 + 0.82 * ((1 - math.cos(phase * math.tau)) / 2)
-
-
 def _scale_color(color: tuple[int, int, int], scale: float) -> tuple[int, int, int]:
     return tuple(max(0, min(255, int(channel * scale))) for channel in color)
+
+
+def _merged_led_color(colors: Sequence[tuple[int, int, int]]) -> tuple[int, int, int]:
+    unique_colors = set(colors)
+    if len(unique_colors) <= 1:
+        return colors[0]
+    return SHARED_LED_COLOR
+
+
+def _expected_piece_color(
+    expected_board: chess.Board | None,
+    square: str,
+    expected_player_color: str | None = None,
+) -> tuple[int, int, int] | None:
+    if expected_board is None:
+        return None
+    piece = expected_board.piece_at(chess.parse_square(square))
+    if piece is None:
+        return None
+    if expected_player_color == "black":
+        return WHITE_PIECE_COLOR if piece.color == chess.BLACK else BLACK_PIECE_COLOR
+    return WHITE_PIECE_COLOR if piece.color == chess.WHITE else BLACK_PIECE_COLOR
+
+
+def _expected_placed_color(
+    expected_board: chess.Board | None,
+    square: str,
+) -> tuple[int, int, int] | None:
+    if expected_board is None:
+        return None
+    piece = expected_board.piece_at(chess.parse_square(square))
+    if piece is None:
+        return None
+    return WHITE_PLACED_COLOR if piece.color == chess.WHITE else BLACK_PLACED_COLOR
 
 
 def _square_marker(square: str) -> int | None:

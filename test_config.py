@@ -2,8 +2,35 @@ import os
 import stat
 import tempfile
 import unittest
+from urllib.parse import parse_qs, urlparse
 
 from chessboard_app.config import AppConfigStore
+
+
+FULL_LICHESS_SCOPES = [
+    "preference:read",
+    "preference:write",
+    "email:read",
+    "engine:read",
+    "engine:write",
+    "challenge:read",
+    "challenge:write",
+    "challenge:bulk",
+    "study:read",
+    "study:write",
+    "tournament:write",
+    "racer:write",
+    "puzzle:read",
+    "puzzle:write",
+    "team:read",
+    "team:write",
+    "team:lead",
+    "follow:read",
+    "follow:write",
+    "msg:write",
+    "board:play",
+    "bot:play",
+]
 
 
 class ConfigTest(unittest.TestCase):
@@ -45,6 +72,20 @@ class ConfigTest(unittest.TestCase):
             self.assertIsNone(loaded.lichess_token)
             self.assertIsNone(loaded.lichess_username)
             self.assertEqual(loaded.device_name, "Board")
+
+    def test_public_state_token_url_requests_all_lichess_scopes(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, "config.json")
+            store = AppConfigStore(path)
+
+            token_url = store.public_state()["lichessTokenUrl"]
+            parsed = urlparse(token_url)
+            query = parse_qs(parsed.query)
+
+            self.assertEqual(parsed.scheme, "https")
+            self.assertEqual(parsed.netloc, "lichess.org")
+            self.assertEqual(parsed.path, "/account/oauth/token/create")
+            self.assertEqual(query["scopes[]"], FULL_LICHESS_SCOPES)
 
     def test_update_settings_preserves_token(self):
         with tempfile.TemporaryDirectory() as tmp:

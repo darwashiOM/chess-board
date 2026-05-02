@@ -1,6 +1,6 @@
 import unittest
 
-from led_mapping import LED_GRID, SQUARE_TO_LED
+from led_mapping import LED_GRID, SQUARE_TO_LED, SQUARE_TO_LED_CORNERS
 
 
 def physical_numbers(square):
@@ -21,6 +21,10 @@ class LedMappingTest(unittest.TestCase):
         self.assertEqual(physical_numbers("g2"), (16, 17, 25, 26))
         self.assertEqual(physical_numbers("h8"), (71, 72, 80, 81))
         self.assertEqual(physical_numbers("a8"), (64, 65, 73, 74))
+
+    def test_ordered_square_corners_follow_physical_circle(self):
+        self.assertEqual(tuple(led + 1 for led in SQUARE_TO_LED_CORNERS["h8"]), (81, 80, 71, 72))
+        self.assertEqual(tuple(led + 1 for led in SQUARE_TO_LED_CORNERS["h2"]), (27, 26, 17, 18))
 
 
 if __name__ == "__main__":

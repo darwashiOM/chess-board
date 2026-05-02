@@ -8,6 +8,8 @@ from typing import Any
 from urllib import parse, request as urllib_request
 from urllib.error import HTTPError
 
+from .lichess_scopes import lichess_scope_string
+
 
 @dataclass(frozen=True)
 class OAuthSession:
@@ -71,7 +73,7 @@ class LichessOAuth:
             "redirect_uri": redirect_uri,
             "code_challenge_method": "S256",
             "code_challenge": _code_challenge(code_verifier),
-            "scope": "board:play puzzle:read puzzle:write",
+            "scope": lichess_scope_string(),
             "state": state,
         })
         return session, f"{self.base_url}/oauth?{query}"

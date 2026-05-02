@@ -17,9 +17,9 @@ LED_GRID = [
 ]
 
 
-def build_square_to_led(led_grid):
+def build_square_to_led_corners(led_grid):
     """
-    Return {'a1': [bottom-left, bottom-right, top-right, top-left], ...}.
+    Return {'a1': [top-right, top-left, bottom-left, bottom-right], ...}.
 
     led_grid is a 9x9 grid of physical LED indices, written from the board's
     top-left corner to bottom-right corner.
@@ -33,15 +33,26 @@ def build_square_to_led(led_grid):
         bottom_row = top_row + 1
         for file_index, file_name in enumerate("abcdefgh"):
             square = f"{file_name}{rank}"
-            square_to_led[square] = sorted([
-                led_grid[bottom_row][file_index],
-                led_grid[bottom_row][file_index + 1],
+            square_to_led[square] = [
                 led_grid[top_row][file_index + 1],
                 led_grid[top_row][file_index],
-            ])
+                led_grid[bottom_row][file_index],
+                led_grid[bottom_row][file_index + 1],
+            ]
     return square_to_led
 
 
-SQUARE_TO_LED = build_square_to_led(LED_GRID)
+def build_square_to_led(led_grid):
+    return {
+        square: sorted(corners)
+        for square, corners in build_square_to_led_corners(led_grid).items()
+    }
+
+
+SQUARE_TO_LED_CORNERS = build_square_to_led_corners(LED_GRID)
+SQUARE_TO_LED = {
+    square: sorted(corners)
+    for square, corners in SQUARE_TO_LED_CORNERS.items()
+}
 ALL_SQUARES = [chess.square_name(index) for index in chess.SQUARES]
 SQ_TO_IDX = {square: chess.parse_square(square) for square in ALL_SQUARES}

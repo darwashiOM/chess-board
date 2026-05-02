@@ -23,13 +23,50 @@ def _base_promotion_uci(move: chess.Move) -> str:
     return chess.square_name(move.from_square) + chess.square_name(move.to_square)
 
 
+def _changed_squares(left: Mapping[str, bool], right: Mapping[str, bool]) -> set[str]:
+    return {
+        square
+        for square in chess.SQUARE_NAMES
+        if bool(left.get(square, False)) != bool(right.get(square, False))
+    }
+
+
+def _move_squares(move: chess.Move, board: chess.Board, expected_before: Mapping[str, bool], expected_after: Mapping[str, bool]) -> set[str]:
+    squares = _changed_squares(expected_before, expected_after)
+    squares.add(chess.square_name(move.from_square))
+    squares.add(chess.square_name(move.to_square))
+    return squares
+
+
+def _matches_partial_move(
+    board: chess.Board,
+    move: chess.Move,
+    before: Mapping[str, bool],
+    after: Mapping[str, bool],
+    expected_before: Mapping[str, bool],
+    expected_after: Mapping[str, bool],
+) -> bool:
+    actual_changed = _changed_squares(before, after)
+    expected_changed = _changed_squares(expected_before, expected_after)
+    if actual_changed != expected_changed:
+        return False
+    for square in _move_squares(move, board, expected_before, expected_after):
+        if bool(before.get(square, False)) != bool(expected_before.get(square, False)):
+            return False
+        if bool(after.get(square, False)) != bool(expected_after.get(square, False)):
+            return False
+    return True
+
+
 def detect_move(
     board: chess.Board,
     before: Mapping[str, bool],
     after: Mapping[str, bool],
+    allow_unsynced: bool = False,
 ) -> MoveDetectionResult:
     expected_before = expected_occupancy_from_board(board)
-    if not _same_occupancy(before, expected_before):
+    synced_before = _same_occupancy(before, expected_before)
+    if not synced_before and not allow_unsynced:
         return MoveDetectionResult("sync_required", reason="before snapshot does not match game position")
 
     matching_moves = []
@@ -39,7 +76,12 @@ def detect_move(
         candidate = board.copy()
         candidate.push(move)
         candidate_after = expected_occupancy_from_board(candidate)
-        if _same_occupancy(after, candidate_after):
+        matches = (
+            _same_occupancy(after, candidate_after)
+            if synced_before
+            else _matches_partial_move(board, move, before, after, expected_before, candidate_after)
+        )
+        if matches:
             if move.promotion:
                 promotion_bases.add(_base_promotion_uci(move))
             else:

@@ -1,6 +1,7 @@
 import unittest
+from unittest.mock import patch
 
-from chessboard_app.lichess_client import LichessClient
+from chessboard_app.lichess_client import LichessClient, UrllibTransport
 
 
 class FakeResponse:
@@ -36,12 +37,47 @@ class LichessClientTest(unittest.TestCase):
         self.assertEqual(url, "https://lichess.org/api/account")
         self.assertEqual(kwargs["headers"]["Authorization"], "Bearer secret")
 
+    def test_empty_token_omits_authorization_header(self):
+        transport = FakeTransport([FakeResponse(data={"username": "player1"})])
+        client = LichessClient("", transport=transport)
+
+        client.validate_token()
+
+        self.assertNotIn("Authorization", transport.calls[0][2]["headers"])
+
     def test_validate_token_rejects_bad_token(self):
         transport = FakeTransport([FakeResponse(status_code=401, text="Unauthorized")])
         client = LichessClient("bad", transport=transport)
 
         with self.assertRaises(PermissionError):
             client.validate_token()
+
+    def test_urllib_transport_get_with_none_data_does_not_encode_body(self):
+        class UrlopenResponse:
+            status = 200
+
+            def read(self):
+                return b'{"username":"player1"}'
+
+        captured = {}
+
+        def fake_urlopen(request, timeout):
+            captured["request"] = request
+            captured["timeout"] = timeout
+            return UrlopenResponse()
+
+        with patch("chessboard_app.lichess_client.urllib_request.urlopen", fake_urlopen):
+            response = UrllibTransport().request(
+                "GET",
+                "https://lichess.org/api/account",
+                headers={"Authorization": "Bearer secret"},
+                data=None,
+                timeout=3,
+            )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertIsNone(captured["request"].data)
+        self.assertEqual(captured["timeout"], 3)
 
     def test_make_move_posts_board_api_move(self):
         transport = FakeTransport([FakeResponse(data={"ok": True})])
@@ -99,6 +135,23 @@ class LichessClientTest(unittest.TestCase):
         self.assertEqual(transport.calls[0][1], "https://lichess.org/api/challenge/ai")
         self.assertEqual(transport.calls[0][2]["data"]["level"], 3)
 
+    def test_stream_game_state_reads_latest_ndjson_event(self):
+        text = (
+            '{"type":"gameFull","id":"game123","white":{"name":"me"},"black":{"name":"AI"},"state":{"moves":"","status":"started"}}\n'
+            '{"type":"gameState","moves":"e2e4 e7e5","status":"started","wtime":180000,"btime":178000}\n'
+        )
+        transport = FakeTransport([FakeResponse(text=text)])
+        client = LichessClient("secret", transport=transport)
+
+        event = client.stream_game_state("game123")
+
+        self.assertEqual(event["id"], "game123")
+        self.assertEqual(event["white"], {"name": "me"})
+        self.assertEqual(event["black"], {"name": "AI"})
+        self.assertEqual(event["state"]["moves"], "e2e4 e7e5")
+        self.assertEqual(transport.calls[0][0], "GET")
+        self.assertEqual(transport.calls[0][1], "https://lichess.org/api/board/game/stream/game123")
+
     def test_can_create_seek(self):
         transport = FakeTransport([FakeResponse(data={"id": "seek1"})])
         client = LichessClient("secret", transport=transport)
@@ -120,13 +173,19 @@ class LichessClientTest(unittest.TestCase):
         self.assertEqual(transport.calls[0][2]["data"]["name"], "ChessBoard")
 
     def test_can_fetch_puzzles(self):
-        transport = FakeTransport([FakeResponse(data={"puzzle": {"id": "p1"}}), FakeResponse(data={"puzzle": {"id": "daily"}})])
+        transport = FakeTransport([
+            FakeResponse(data={"puzzle": {"id": "p1"}}),
+            FakeResponse(data={"puzzles": [{"puzzle": {"id": "batch1"}}]}),
+            FakeResponse(data={"puzzle": {"id": "daily"}}),
+        ])
         client = LichessClient("secret", transport=transport)
 
         self.assertEqual(client.next_puzzle(), {"puzzle": {"id": "p1"}})
+        self.assertEqual(client.puzzle_batch(nb=1), {"puzzles": [{"puzzle": {"id": "batch1"}}]})
         self.assertEqual(client.daily_puzzle(), {"puzzle": {"id": "daily"}})
         self.assertEqual(transport.calls[0][1], "https://lichess.org/api/puzzle/next")
-        self.assertEqual(transport.calls[1][1], "https://lichess.org/api/puzzle/daily")
+        self.assertEqual(transport.calls[1][1], "https://lichess.org/api/puzzle/batch/mix?nb=1")
+        self.assertEqual(transport.calls[2][1], "https://lichess.org/api/puzzle/daily")
 
 
 if __name__ == "__main__":
