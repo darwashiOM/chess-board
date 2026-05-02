@@ -42,11 +42,12 @@ from chessboard_app.sensors import (
 from led_mapping import SQUARE_TO_LED
 
 
-MISSING_COLOR = (90, 8, 4)
-EXTRA_COLOR = (110, 40, 0)
-LEGAL_TARGET_COLOR = (90, 60, 0)
-COMPUTER_MOVE_COLOR = (110, 35, 0)
-READY_COLOR = (90, 30, 0)
+MISSING_COLOR = (200, 14, 6)
+EXTRA_COLOR = (220, 90, 0)
+WARM_GLOW_COLOR = (220, 90, 12)
+LEGAL_TARGET_COLOR = (160, 140, 0)
+COMPUTER_MOVE_COLOR = (0, 80, 180)
+READY_COLOR = (0, 120, 40)
 
 
 def square_marker_index(square: str) -> int | None:
@@ -55,7 +56,7 @@ def square_marker_index(square: str) -> int | None:
 
 
 class WarmBoardController(DotStarLedController):
-    """DotStar controller with warm-only setup + ready animation."""
+    """DotStar controller with bright warm setup, green ready, classic play colors."""
 
     def show_setup_guidance(
         self,
@@ -64,7 +65,6 @@ class WarmBoardController(DotStarLedController):
         frame: int = 0,
         occupied_squares: Sequence[str] | None = None,
     ) -> None:
-        # Bypass the parent implementation so we control colors precisely.
         self.mode = "setup"
         self.highlighted_squares = list(missing_squares)
         self.extra_squares = list(extra_squares)
@@ -74,13 +74,13 @@ class WarmBoardController(DotStarLedController):
             return
 
         self.pixels.fill((0, 0, 0))
+        phase = (frame % 32) / 32
+        glow = 0.35 + 0.65 * ((1 - math.cos(phase * math.tau)) / 2)
+        warm = _scale(WARM_GLOW_COLOR, glow)
         for square in occupied_squares or []:
-            index = square_marker_index(square)
-            if index is None:
-                continue
-            phase = (frame % 36) / 36
-            glow = 0.25 + 0.75 * ((1 - math.cos(phase * math.tau)) / 2)
-            self.pixels[index] = _scale((30, 12, 2), glow)
+            for index in SQUARE_TO_LED.get(square, []):
+                if 0 <= index < self.count:
+                    self.pixels[index] = warm
         for square in missing_squares:
             index = square_marker_index(square)
             if index is not None and 0 <= index < self.count:
@@ -100,7 +100,7 @@ class WarmBoardController(DotStarLedController):
             return
         for index in range(self.count):
             self.pixels.fill((0, 0, 0))
-            for tail_offset, level in enumerate((1.0, 0.5, 0.22, 0.08)):
+            for tail_offset, level in enumerate((1.0, 0.45, 0.18)):
                 tail_index = index - tail_offset
                 if 0 <= tail_index < self.count:
                     self.pixels[tail_index] = _scale(READY_COLOR, level)

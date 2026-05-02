@@ -12,11 +12,12 @@ from led_mapping import LED_GRID, SQUARE_TO_LED
 
 SETUP_BREATH_PERIOD = 32
 SETUP_PATTERN_PERIOD = 48
-MISSING_COLOR = (80, 8, 8)
-EXTRA_COLOR = (95, 36, 0)
-LEGAL_TARGET_COLOR = (90, 60, 0)
-MOVE_COLOR = (110, 35, 0)
-READY_COLOR = (90, 30, 0)
+MISSING_COLOR = (200, 14, 6)
+EXTRA_COLOR = (220, 90, 0)
+WARM_GLOW_COLOR = (220, 90, 12)
+LEGAL_TARGET_COLOR = (160, 140, 0)
+MOVE_COLOR = (0, 80, 180)
+READY_COLOR = (0, 120, 40)
 
 
 @dataclass(frozen=True)
@@ -206,7 +207,13 @@ class DotStarLedController(MemoryLedController):
             return
 
         self.pixels.fill((0, 0, 0))
-        self._render_setup_background(frame, occupied_squares or [])
+        phase = (frame % SETUP_BREATH_PERIOD) / SETUP_BREATH_PERIOD
+        glow = 0.35 + 0.65 * ((1 - math.cos(phase * math.tau)) / 2)
+        warm = _scale_color(WARM_GLOW_COLOR, glow)
+        for square in occupied_squares or []:
+            for index in SQUARE_TO_LED.get(square, []):
+                if 0 <= index < self.count:
+                    self.pixels[index] = warm
         self._set_square_markers(missing_squares, MISSING_COLOR)
         self._set_square_markers(extra_squares, EXTRA_COLOR)
         self.pixels.show()
@@ -218,7 +225,7 @@ class DotStarLedController(MemoryLedController):
             return
         for index in range(self.count):
             self.pixels.fill((0, 0, 0))
-            for tail_offset, level in enumerate((1.0, 0.5, 0.22, 0.08)):
+            for tail_offset, level in enumerate((1.0, 0.45, 0.18)):
                 tail_index = index - tail_offset
                 if 0 <= tail_index < self.count:
                     self.pixels[tail_index] = _scale_color(READY_COLOR, level)
