@@ -1,4 +1,7 @@
 from typing import Any
+import threading
+
+import chess
 
 from chessboard_app.config import AppConfigStore
 from chessboard_app.game_session import GameSession
@@ -33,9 +36,7 @@ def build_state(
     ))
     sync = game_session.sync_status(snapshot)
     _auto_accept_ready_puzzle_move(game_session, snapshot, allow_unsynced=bool(state.get("testMode")))
-    sync = game_session.sync_status(snapshot)
-    if sync.get("matches") and getattr(game_session, "auto_mark_synced", lambda: False)():
-        game_session.mark_synced(snapshot)
+    sync = _reconciled_sync_status(game_session, snapshot)
     update_led_display(
         led_controller,
         game_session,
@@ -57,6 +58,7 @@ def build_state(
     state["sensorDetails"] = _sensor_details_for_snapshot(sensor_reader, raw_snapshot, snapshot, orientation)
     state["game"] = game_session.public_state()
     state["sync"] = sync
+    state["pendingMove"] = _pending_submit_move(game_session, snapshot, bool(state.get("submitMoveEnabled")), bool(state.get("testMode")))
     state["wifi"] = wifi_manager.status()
     return state
 
@@ -67,6 +69,7 @@ def build_live_state(
     led_controller: Any | None = None,
     test_mode: bool = False,
     board_orientation: str = "white",
+    submit_move_enabled: bool = False,
 ) -> dict[str, Any]:
     game_session = game_session or GameSession()
     orientation = _active_orientation(board_orientation, game_session)
@@ -81,9 +84,7 @@ def build_live_state(
     ))
     sync = game_session.sync_status(snapshot)
     _auto_accept_ready_puzzle_move(game_session, snapshot, allow_unsynced=test_mode)
-    sync = game_session.sync_status(snapshot)
-    if sync.get("matches") and getattr(game_session, "auto_mark_synced", lambda: False)():
-        game_session.mark_synced(snapshot)
+    sync = _reconciled_sync_status(game_session, snapshot)
     update_led_display(led_controller, game_session, sync, snapshot, test_mode=test_mode)
     sensor_status = getattr(sensor_reader, "status", lambda: "ok")()
     state = {
@@ -96,6 +97,7 @@ def build_live_state(
         "sensorDetails": _sensor_details_for_snapshot(sensor_reader, raw_snapshot, snapshot, orientation),
         "game": game_session.public_state(),
         "sync": sync,
+        "pendingMove": _pending_submit_move(game_session, snapshot, submit_move_enabled, test_mode),
     }
     sensor_error = getattr(sensor_reader, "error", None)
     if sensor_error:
@@ -132,6 +134,18 @@ def _sensor_details_for_snapshot(
         for value in details.values():
             value["error"] = sensor_error
     return details
+
+
+def _reconciled_sync_status(game_session: GameSession, snapshot: dict[str, bool]) -> dict[str, Any]:
+    sync = game_session.sync_status(snapshot)
+    if sync.get("matches"):
+        if getattr(game_session, "auto_mark_synced", lambda: False)():
+            game_session.mark_synced(snapshot)
+        return sync
+    if getattr(game_session, "copied_last_move_matches", lambda _snapshot: False)(snapshot):
+        game_session.mark_synced(game_session.expected_occupancy())
+        return {"matches": True, "missing": [], "extra": [], "reconciledLastMove": True}
+    return sync
 
 
 def update_led_display(
@@ -173,8 +187,9 @@ def update_led_display(
         getattr(led_controller, "clear", lambda: None)()
         return
 
-    if len(missing) == 1 and not extra:
-        led_controller.show_legal_targets(game_session.board, missing[0])
+    lifted_square = _best_lifted_square_for_targets(game_session.board, missing, extra)
+    if lifted_square:
+        led_controller.show_legal_targets(game_session.board, lifted_square)
         return
 
     if game_session.last_move:
@@ -205,6 +220,44 @@ def _test_mode_lifted_square(game_session: GameSession, actual_occupancy: dict[s
     return None
 
 
+def _best_lifted_square_for_targets(board: Any, missing: list[str], extra: list[str]) -> str | None:
+    candidates: list[tuple[int, str]] = []
+    extra_set = {chess.parse_square(square) for square in extra}
+    for square in missing:
+        source = chess.parse_square(square)
+        piece = board.piece_at(source)
+        if not piece or piece.color != board.turn:
+            continue
+        moves = [move for move in board.legal_moves if move.from_square == source]
+        if not moves:
+            continue
+        reaches_extra = any(move.to_square in extra_set for move in moves)
+        candidates.append((0 if reaches_extra else 1, square))
+    if not candidates:
+        return None
+    candidates.sort()
+    return candidates[0][1]
+
+
+def _pending_submit_move(
+    game_session: GameSession,
+    snapshot: dict[str, bool],
+    submit_move_enabled: bool,
+    test_mode: bool,
+) -> dict[str, str] | None:
+    if game_session.mode != "game" or not game_session.game_id:
+        return None
+    result = game_session.detect_move_from_last_snapshot(snapshot, allow_unsynced=True)
+    if result.kind not in {"move", "dragging", "castling_in_progress"} or not result.uci:
+        return None
+    return {
+        "kind": result.kind,
+        "uci": result.uci,
+        "from": result.uci[:2],
+        "to": result.uci[2:4],
+    }
+
+
 def _auto_accept_ready_puzzle_move(
     game_session: GameSession,
     snapshot: dict[str, bool],
@@ -227,6 +280,7 @@ def create_app(
     wifi_manager: WifiManager | None = None,
     led_controller: Any | None = None,
     input_queue: InputQueue | None = None,
+    lichess_client_factory: Any | None = None,
 ):
     try:
         from fastapi import FastAPI, HTTPException, Request
@@ -256,6 +310,7 @@ def create_app(
         boardOrientation: str | None = None
         deviceName: str | None = None
         testMode: bool | None = None
+        submitMoveEnabled: bool | None = None
 
     class WifiConnectRequest(BaseModel):
         ssid: str
@@ -295,6 +350,18 @@ def create_app(
         color: str = "random"
         variant: str = "standard"
 
+    class ChallengeCancelRequest(BaseModel):
+        challengeId: str
+
+    def _estimated_clock_seconds(time_minutes: int, increment: int) -> int:
+        return time_minutes * 60 + increment * 40
+
+    def _board_seek_supported(time_minutes: int, increment: int) -> bool:
+        return _estimated_clock_seconds(time_minutes, increment) >= 8 * 60
+
+    def _unsupported_board_seek_detail() -> str:
+        return "Lichess Board API quick pairing only accepts rapid/classical time controls. Use Rapid 10+0 or Classical 15+10."
+
     def _phone_base_url() -> str:
         try:
             status = wifi_manager.status()
@@ -330,15 +397,33 @@ def create_app(
       }
       body { margin: 0; font-family: system-ui, sans-serif; background: radial-gradient(circle at top left, #ffffff 0, var(--porcelain) 42%, #f0e9dd 100%); color: var(--charcoal); overflow: hidden; }
       #kioskRoot { width: 100vw; height: 100vh; padding: 10px; display: grid; grid-template-rows: auto 1fr auto; gap: 8px; }
+      #kioskRoot.compactBoardChrome { grid-template-rows: 1fr auto; }
+      #kioskRoot.compactBoardChrome header { display: none; }
       header { display: grid; grid-template-columns: 1fr auto; gap: 10px; align-items: center; border-bottom: 1px solid var(--line); padding-bottom: 7px; }
       .brandBlock { display: grid; gap: 1px; min-width: 0; }
       .brandName { font-size: 13px; font-weight: 760; letter-spacing: .28em; text-transform: uppercase; white-space: nowrap; color: var(--charcoal); }
       .brandName .mate { color: var(--gold-deep); }
       h1 { font-size: clamp(18px, 4vw, 27px); margin: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; font-weight: 780; }
       .pill { background: var(--charcoal); color: var(--gold); border: 1px solid var(--gold); border-radius: 999px; padding: 5px 9px; font-weight: 850; font-size: 13px; box-shadow: 0 5px 16px rgba(44, 43, 47, .12); }
-      .screen { min-height: 0; overflow: hidden; display: grid; gap: 8px; align-content: start; }
+      .screen { min-height: 0; overflow: auto; display: grid; gap: 8px; align-content: start; scroll-behavior: smooth; }
       .split { display: grid; grid-template-columns: minmax(128px, 40vh) 1fr; gap: 10px; min-height: 0; }
-      .board { display: grid; grid-template-columns: repeat(8, 1fr); grid-template-rows: repeat(8, 1fr); width: min(40vh, 42vw); aspect-ratio: 1; border: 2px solid var(--gold-deep); box-shadow: 0 14px 35px rgba(44, 43, 47, .16); }
+      .board { position: relative; display: grid; grid-template-columns: repeat(8, 1fr); grid-template-rows: repeat(8, 1fr); width: min(40vh, 42vw); aspect-ratio: 1; border: 2px solid var(--gold-deep); box-shadow: 0 14px 35px rgba(44, 43, 47, .16); }
+      .gameLayout { min-height: 0; display: grid; grid-template-rows: auto auto minmax(0, 1fr); gap: 8px; overflow: hidden; justify-items: center; }
+      .gameLayout .board { width: min(70vh, 96vw); max-height: 64vh; }
+      .gameStatusBanner { width: min(70vh, 96vw); border: 2px solid var(--gold-deep); background: var(--charcoal); color: var(--gold); padding: 8px 10px; font-size: clamp(16px, 5vw, 28px); line-height: 1.05; font-weight: 900; text-align: center; box-shadow: 0 12px 30px rgba(44, 43, 47, .16); }
+      .gameStatusBanner.alert { background: var(--danger); color: #fff; border-color: var(--danger); }
+      .gameStatusBanner.good { background: #1f6b4c; color: #fff; border-color: #1f6b4c; }
+      .gameDetails { width: 100%; min-height: 0; overflow: hidden; color: var(--graphite); line-height: 1.3; display: grid; gap: 5px; background: rgba(255, 254, 253, .72); border: 1px solid var(--line); padding: 8px; }
+      .clockGrid { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; }
+      .clockPanel { border: 2px solid var(--line); background: rgba(255, 254, 253, .94); padding: 8px; display: grid; gap: 2px; box-shadow: 0 8px 20px rgba(44, 43, 47, .06); }
+      .clockPanel.active { border-color: var(--gold-deep); background: linear-gradient(180deg, #fffefd, var(--gold-soft)); box-shadow: inset 0 -4px 0 var(--gold), 0 10px 26px rgba(154, 120, 52, .18); }
+      .clockPanel.mine { border-left: 5px solid #f4c84a; }
+      .clockPanel.opponent { border-left: 5px solid #1967d2; }
+      .clockLabel { font-size: 11px; font-weight: 850; color: var(--graphite); text-transform: uppercase; letter-spacing: .08em; }
+      .clockTime { font-size: clamp(20px, 7vw, 34px); line-height: 1; font-weight: 900; color: var(--charcoal); font-variant-numeric: tabular-nums; }
+      .actionBar { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 5px; }
+      .actionBar .item { min-height: 34px; padding: 5px 6px; font-size: 12px; text-align: center; grid-template-columns: 1fr; }
+      .actionBar .item small { display: none; }
       .sq { aspect-ratio: 1; display: grid; place-items: center; font-size: 10px; font-weight: 800; position: relative; min-width: 0; min-height: 0; overflow: hidden; }
       .coord { position: absolute; z-index: 2; pointer-events: none; color: var(--gold-deep); font-size: 9px; font-weight: 900; line-height: 1; text-shadow: 0 1px 1px rgba(255, 255, 255, .65); }
       .fileCoord { left: 50%; bottom: 2px; transform: translateX(-50%); text-transform: uppercase; }
@@ -352,7 +437,10 @@ def create_app(
       .piece-blue { fill: #1967d2; stroke: #0b376f; stroke-width: 2.4px; paint-order: stroke fill; }
       .piece-yellow { fill: #f4c84a; stroke: #8d6d13; stroke-width: 2.4px; paint-order: stroke fill; }
       .sq.target::after { content: ""; position: absolute; width: 52%; height: 52%; border-radius: 50%; border: 3px solid #1967d2; background: rgba(25, 103, 210, .22); box-shadow: 0 0 0 2px rgba(244, 200, 74, .72), 0 0 16px rgba(25, 103, 210, .45); z-index: 1; pointer-events: none; }
-      .list { display: grid; gap: 6px; max-height: 72vh; overflow: hidden; }
+      .moveLine { position: absolute; inset: 0; width: 100%; height: 100%; z-index: 3; pointer-events: none; overflow: visible; }
+      .moveLine line { stroke: #1967d2; stroke-width: 5; stroke-linecap: round; filter: drop-shadow(0 0 4px rgba(244, 200, 74, .92)); }
+      .moveLine circle { fill: #f4c84a; stroke: #1967d2; stroke-width: 2; }
+      .list { display: grid; gap: 6px; max-height: 72vh; overflow: auto; scroll-behavior: smooth; }
       .item { min-height: 42px; display: grid; grid-template-columns: 1fr auto; align-items: center; gap: 8px; border: 2px solid var(--line); background: rgba(255, 254, 253, .92); color: var(--charcoal); padding: 8px 10px; font-weight: 760; box-shadow: 0 6px 18px rgba(44, 43, 47, .06); }
       .item.selected { background: linear-gradient(90deg, var(--gold-soft), #fffefd); color: var(--charcoal); border-color: var(--gold); box-shadow: inset 4px 0 0 var(--gold-deep), 0 10px 26px rgba(154, 120, 52, .18); }
       .item small { opacity: .82; font-weight: 700; }
@@ -380,16 +468,32 @@ def create_app(
       @media (max-width: 560px), (max-height: 420px) {
         #kioskRoot { padding: 6px; gap: 5px; }
         header { padding-bottom: 4px; }
-        .brandName { font-size: 10px; letter-spacing: .2em; }
-        h1 { font-size: 17px; }
-        .split { grid-template-columns: 35vw 1fr; gap: 7px; }
-        .board { width: 35vw; }
+        .brandName { font-size: 13px; letter-spacing: .2em; }
+        h1 { font-size: 26px; }
+        .pill { font-size: 18px; padding: 7px 11px; }
+        .screen { gap: 10px; }
+        .split { grid-template-columns: 24vw 1fr; gap: 10px; }
+        .board { width: 24vw; }
+        .gameLayout { gap: 9px; }
+        .gameLayout .board { width: min(98vw, 58vh); max-height: 58vh; }
+        .gameStatusBanner { width: min(98vw, 58vh); font-size: 30px; padding: 10px 12px; }
+        .gameDetails { font-size: 17px; padding: 10px; gap: 5px; }
+        .clockGrid { gap: 7px; }
+        .clockPanel { padding: 9px; }
+        .clockLabel { font-size: 14px; }
+        .clockTime { font-size: 32px; }
+        .actionBar { grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 6px; }
+        .actionBar .item { min-height: 42px; padding: 6px 5px; font-size: 14px; }
         .coord { font-size: 8px; }
-        .item { min-height: 34px; padding: 5px 7px; font-size: 13px; }
-        .key { min-height: 31px; font-size: 13px; }
+        .list { gap: 9px; }
+        .item { min-height: 64px; padding: 12px 12px; font-size: 22px; }
+        .item small { font-size: 16px; }
+        .meta { font-size: 18px; padding: 12px; }
+        .status { font-size: 18px; min-height: 32px; }
+        .key { min-height: 54px; font-size: 21px; }
         .qrCard img { width: min(28vw, 112px, 34vh); }
-        .wifiStatus { grid-template-columns: 1fr; gap: 5px; padding: 5px 7px; font-size: 13px; }
-        footer { font-size: 10px; }
+        .wifiStatus { grid-template-columns: 1fr; gap: 7px; padding: 10px 12px; font-size: 18px; }
+        footer { font-size: 14px; }
       }
     </style>
   </head>
@@ -411,6 +515,7 @@ def create_app(
       for (var rank = 8; rank >= 1; rank--) {
         for (var fileIndex = 0; fileIndex < files.length; fileIndex++) squares.push(files[fileIndex] + rank);
       }
+      var rootEl = document.getElementById("kioskRoot");
       var appEl = document.getElementById("screen");
       var titleEl = document.getElementById("screenTitle");
       var pillEl = document.getElementById("screenPill");
@@ -439,26 +544,61 @@ def create_app(
         setupOverride: false,
         confirmResign: false,
         pendingStart: null,
-        pendingStartInFlight: false
+        pendingStartPayload: null,
+        pendingStartLabel: "",
+        pendingStartInFlight: false,
+        selectedComputerTime: null,
+        pendingOnlineGame: false,
+        challengeUrl: "",
+        challengeId: "",
+        autoSubmitMoveKey: null,
+        autoSubmitInFlight: false
       };
       var latestState = null;
+      var clockBase = null;
       var scanInFlight = false;
       var mainMenu = [
-        ["Play", "playMenu"],
-        ["Current Game", "game"],
+        ["Online Games", "onlineMenu"],
+        ["Play Computer", "computerMenu"],
         ["Tactics", "tactics"],
-        ["Settings", "settings"],
-        ["Diagnostics", "diagnostics"],
-        ["Board Test", "boardTest"],
-        ["LED Test", "ledTest"]
+        ["Settings", "settings"]
       ];
-      var playMenu = [
-        ["Random 3+2", function () { playAction("/api/play/seek", {timeMinutes: 3, increment: 2}); }],
-        ["Random 5+0", function () { playAction("/api/play/seek", {timeMinutes: 5, increment: 0}); }],
-        ["Play Computer", function () { startComputerGame(); }],
-        ["Friend Link", function () { playAction("/api/play/open", {timeMinutes: 3, increment: 2}); }],
-        ["Daily Puzzle", function () { fetchPuzzle("/api/puzzles/daily"); }],
-        ["Tactics", function () { setScreen("tactics"); }]
+      var computerMenu = [
+        ["Blitz 3+0", function () { startComputerTime(180, 0, "Blitz 3+0"); }],
+        ["Blitz 3+2", function () { startComputerTime(180, 2, "Blitz 3+2"); }],
+        ["Blitz 5+0", function () { startComputerTime(300, 0, "Blitz 5+0"); }],
+        ["Blitz 5+2", function () { startComputerTime(300, 2, "Blitz 5+2"); }],
+        ["Blitz 5+3", function () { startComputerTime(300, 3, "Blitz 5+3"); }],
+        ["Rapid 10+0", function () { startComputerTime(600, 0, "Rapid 10+0"); }],
+        ["Classical 15+10", function () { startComputerTime(900, 10, "Classical 15+10"); }],
+        ["Back", function () { setScreen("mainMenu"); }]
+      ];
+      var computerLevelMenu = [
+        ["Level 1", function () { startComputerGame(1); }],
+        ["Level 2", function () { startComputerGame(2); }],
+        ["Level 3", function () { startComputerGame(3); }],
+        ["Level 4", function () { startComputerGame(4); }],
+        ["Level 5", function () { startComputerGame(5); }],
+        ["Level 6", function () { startComputerGame(6); }],
+        ["Level 7", function () { startComputerGame(7); }],
+        ["Level 8", function () { startComputerGame(8); }],
+        ["Back", function () { setScreen("computerMenu"); }]
+      ];
+      var onlineMenu = [
+        ["Rapid 10+0", function () { startOnlineGame({timeMinutes: 10, increment: 0}, "Rapid 10+0"); }],
+        ["Classical 15+10", function () { startOnlineGame({timeMinutes: 15, increment: 10}, "Classical 15+10"); }],
+        ["Challenge Link", function () { setScreen("challengeMenu"); }],
+        ["Back", function () { setScreen("mainMenu"); }]
+      ];
+      var challengeMenu = [
+        ["Blitz 3+0", function () { startChallengeLink(3, 0, "Blitz 3+0"); }],
+        ["Blitz 3+2", function () { startChallengeLink(3, 2, "Blitz 3+2"); }],
+        ["Blitz 5+0", function () { startChallengeLink(5, 0, "Blitz 5+0"); }],
+        ["Blitz 5+2", function () { startChallengeLink(5, 2, "Blitz 5+2"); }],
+        ["Blitz 5+3", function () { startChallengeLink(5, 3, "Blitz 5+3"); }],
+        ["Rapid 10+0", function () { startChallengeLink(10, 0, "Rapid 10+0"); }],
+        ["Classical 15+10", function () { startChallengeLink(15, 10, "Classical 15+10"); }],
+        ["Back", function () { setScreen("onlineMenu"); }]
       ];
       function activeControlRoot() { return appEl; }
       function escapeHtml(value) {
@@ -506,11 +646,20 @@ def create_app(
         if (!state.lichess || !state.lichess.connected) return "lichess";
         return "app";
       }
+      function setCompactBoardChrome(enabled) {
+        if (enabled) rootEl.className = "compactBoardChrome";
+        else rootEl.className = "";
+      }
       function setHeader(title, pill) {
+        setCompactBoardChrome(false);
         titleEl.textContent = title;
         pillEl.textContent = pill || kioskState.lastCommand;
       }
       function selectedClass(index) { return index === kioskState.selected ? " selected" : ""; }
+      function scrollSelectedIntoView() {
+        var selected = appEl.querySelector(".item.selected, .key.selected");
+        if (selected && selected.scrollIntoView) selected.scrollIntoView({block: "nearest", inline: "nearest"});
+      }
       function setScreen(screen) {
         kioskState.screen = screen;
         kioskState.selected = 0;
@@ -663,7 +812,8 @@ def create_app(
           for (var t = 0; t < highlighted.length; t++) targets[highlighted[t]] = true;
         } else if (leds.mode === "move") {
           var moveSquares = leds.highlightedSquares || [];
-          for (var m = 0; m < moveSquares.length; m++) targets[moveSquares[m]] = true;
+          var lastMoveSquare = moveSquares.length ? moveSquares[moveSquares.length - 1] : null;
+          if (lastMoveSquare) targets[lastMoveSquare] = true;
         }
         var html = '<div class="board">';
         pieces = pieces || {};
@@ -676,33 +826,107 @@ def create_app(
           var rank = Number(square.charAt(1));
           html += '<div class="sq ' + ((file + rank) % 2 ? "light" : "dark") + (targets[square] ? " target" : "") + '">' + (pieces[square] ? pieceSvg(pieces[square], playerColor) : '') + squareCoordinateLabels(square, row, col) + '</div>';
         }
-        return html + '</div>';
+        return html + pendingMoveLine(orientation, latestState && latestState.pendingMove) + '</div>';
+      }
+      function pendingMoveLine(orientation, move) {
+        if (!move || !move.from || !move.to) return "";
+        var fromIndex = orientation.indexOf(move.from);
+        var toIndex = orientation.indexOf(move.to);
+        if (fromIndex < 0 || toIndex < 0) return "";
+        var fromCol = fromIndex % 8;
+        var fromRow = Math.floor(fromIndex / 8);
+        var toCol = toIndex % 8;
+        var toRow = Math.floor(toIndex / 8);
+        var x1 = (fromCol + 0.5) * 12.5;
+        var y1 = (fromRow + 0.5) * 12.5;
+        var x2 = (toCol + 0.5) * 12.5;
+        var y2 = (toRow + 0.5) * 12.5;
+        return '<svg class="moveLine" viewBox="0 0 100 100" aria-hidden="true"><line x1="' + x1 + '" y1="' + y1 + '" x2="' + x2 + '" y2="' + y2 + '"></line><circle cx="' + x2 + '" cy="' + y2 + '" r="4.2"></circle></svg>';
+      }
+      function renderChallengeWait() {
+        setHeader("Challenge Link", "Waiting");
+        var url = kioskState.challengeUrl || "Creating...";
+        appEl.innerHTML = '<div class="status">Waiting for opponent to accept.</div><div class="item"><span>' + escapeHtml(url) + '</span><small>challenge url</small></div><section class="actionBar"><div class="item' + selectedClass(0) + '"><span>Cancel Challenge</span><small>back</small></div></section><div class="status">Keep this screen open. The board will switch to the game after it is accepted.</div>';
+      }
+      function renderOnlineWait() {
+        setHeader("Online Game", "Waiting");
+        appEl.innerHTML = '<div class="status">' + escapeHtml(kioskState.message || "Waiting for Lichess pairing") + '</div><section class="actionBar"><div class="item' + selectedClass(0) + '"><span>Back</span><small>stop waiting</small></div></section><div class="status">The board will switch to the game as soon as Lichess pairs you.</div>';
       }
       function renderGame() {
         var game = latestState && latestState.game ? latestState.game : {clock: {whiteMs: null, blackMs: null}};
-        var clock = game.clock || {whiteMs: null, blackMs: null};
         var sync = latestState && latestState.sync ? latestState.sync : {matches: false, missing: [], extra: []};
-        var actions = [["Submit Move", "board"], ["Offer/Accept Draw", "draw"], ["Decline Draw", "no"], [kioskState.confirmResign ? "Confirm Resign" : "Resign", "resign"], ["Refresh Lichess", "sync"], ["Back", "menu"]];
-        var actionHtml = '<section class="list compact">';
-        for (var i = 0; i < actions.length; i++) actionHtml += '<div class="item' + selectedClass(i) + '"><span>' + actions[i][0] + '</span><small>' + actions[i][1] + '</small></div>';
+        var pendingMove = latestState && latestState.pendingMove ? latestState.pendingMove : null;
+        var pendingMoveText = pendingMove ? '<div>Detected move: <code>' + escapeHtml(pendingMove.uci) + '</code>' + (pendingMove.kind === "dragging" ? ' - finish clearing the source square' : '') + '</div>' : "";
+        var actions = [];
+        if (isGameOver(game)) {
+          actions.push(["Main Menu", "done"], ["Refresh Lichess", "sync"]);
+        } else {
+          if (latestState && latestState.submitMoveEnabled) actions.push(["Submit Move", "board"]);
+          actions.push(["Offer/Accept Draw", "draw"], ["Decline Draw", "no"], [kioskState.confirmResign ? "Confirm Resign" : "Resign", "resign"], ["Refresh Lichess", "sync"]);
+        }
+        var actionStart = 0;
+        var actionHtml = '<section class="actionBar">';
+        for (var i = 0; i < actions.length; i++) actionHtml += '<div class="item' + selectedClass(actionStart + i) + '"><span>' + actions[i][0] + '</span><small>' + actions[i][1] + '</small></div>';
         actionHtml += '</section>';
-        setHeader("Current Game", game.drawOffer ? "Draw Offered" : (sync.matches ? "Synced" : "Fix Board"));
-        appEl.innerHTML = '<div class="split">' + renderPositionBoard(game.pieces || {}, game.playerColor || "white", gameBoardOrientation(game)) + '<div class="meta"><div>' + escapeHtml(gameHelpText(sync)) + '</div><div>You are: <code>' + escapeHtml(game.playerColor || "unknown") + '</code></div><div>Board view: <code>' + escapeHtml(gameBoardOrientation(game)) + '</code></div><div>White: <code>' + formatClock(clock.whiteMs) + '</code> Black: <code>' + formatClock(clock.blackMs) + '</code></div><div>Game: <code>' + escapeHtml(game.id || "none") + '</code></div><div>Status: <code>' + escapeHtml(game.status || "idle") + '</code></div><div>Turn: <code>' + escapeHtml(game.turn || "white") + '</code></div><div>Last move: <code>' + escapeHtml(game.lastMove || "none") + '</code></div><div>Draw offer: <code>' + escapeHtml(game.drawOffer || "none") + '</code></div><div>Missing: <code>' + escapeHtml((sync.missing || []).join(", ") || "none") + '</code></div><div>Extra: <code>' + escapeHtml((sync.extra || []).join(", ") || "none") + '</code></div>' + renderDebugRows(game, sync) + actionHtml + '</div></div>';
+        setCompactBoardChrome(true);
+        appEl.innerHTML = '<div class="gameLayout">' + renderGameStatusBanner(game, sync) + renderPositionBoard(game.pieces || {}, game.playerColor || "white", gameBoardOrientation(game)) + '<div class="gameDetails">' + renderClockGrid(game) + pendingMoveText + actionHtml + '<div>You are: <code>' + escapeHtml(game.playerColor || "unknown") + '</code></div><div>Status: <code>' + escapeHtml(game.status || "idle") + '</code> Turn: <code>' + escapeHtml(game.turn || "white") + '</code></div><div>Last move: <code>' + escapeHtml(game.lastMove || "none") + '</code> Draw: <code>' + escapeHtml(game.drawOffer || "none") + '</code></div>' + renderDebugRows(game, sync) + '</div></div>';
+      }
+      function renderGameStatusBanner(game, sync) {
+        var text = gameStatusText(game, sync);
+        var klass = gameStatusClass(game, sync);
+        return '<div class="gameStatusBanner ' + klass + '">' + escapeHtml(text) + '</div>';
+      }
+      function gameStatusClass(game, sync) {
+        if (game && game.winner && game.playerColor && game.winner === game.playerColor) return "good";
+        if (game && game.winner) return "alert";
+        if (game && isGameOver(game)) return "alert";
+        if (sync && !sync.matches) return "alert";
+        return "";
+      }
+      function gameStatusText(game, sync) {
+        game = game || {};
+        if (!game.id && game.status === "idle") return "Set up board";
+        if (!game.id) return "Ready";
+        if (game.status === "resign" && game.winner && game.playerColor) return game.winner === game.playerColor ? "Opponent resigned" : "You resigned";
+        if (game.status === "aborted") return "Game aborted";
+        if (game.status === "draw" || game.status === "stalemate") return "Draw";
+        if (game.status === "outoftime" || game.status === "timeout") return game.winner ? (game.winner === game.playerColor ? "You won on time" : "You lost on time") : "Out of time";
+        if (game.winner && game.playerColor && game.winner === game.playerColor) return "You won";
+        if (game.winner) return "You lost";
+        if (game.drawOffer) return (game.drawOffer === game.playerColor ? "Draw offer sent" : "Opponent offered draw");
+        if (game.turn && game.playerColor && game.turn === game.playerColor) return "Your move";
+        if (game.turn) return "Opponent move";
+        if (sync && !sync.matches) return "Calibrating board";
+        return "Ready";
+      }
+      function isGameOver(game) {
+        if (!game || !game.status) return false;
+        return ["mate", "resign", "draw", "stalemate", "aborted", "timeout", "outoftime", "noStart", "cheat", "variantEnd", "unknownFinish"].indexOf(game.status) >= 0;
+      }
+      function renderClockGrid(game) {
+        return '<section class="clockGrid">' + renderClockPanel(game, "white") + renderClockPanel(game, "black") + '</section>';
+      }
+      function renderClockPanel(game, color) {
+        var mine = game && game.playerColor === color;
+        var active = game && game.turn === color && game.status === "started";
+        var label = mine ? "You" : (color === "white" ? "White" : "Black");
+        var detail = color === "white" ? "White" : "Black";
+        return '<div class="clockPanel ' + (active ? "active " : "") + (mine ? "mine" : "opponent") + '"><div class="clockLabel">' + label + ' · ' + detail + '</div><div class="clockTime">' + formatClock(displayClockMs(game, color)) + '</div></div>';
       }
       function renderSettings() {
         var state = latestState || {};
-        renderMenu("Settings", [["Lights On", "enable"], ["Lights Off", "disable"], ["Brightness Up", "up"], ["Brightness Down", "down"], ["Brightness " + Math.round((state.ledBrightness || 0.1) * 100) + "%", "level"], ["Orientation " + (state.boardOrientation || "white"), "orientation"], ["Test Mode " + (state.testMode ? "On" : "Off"), "test"], ["Reconnect Wi-Fi", "wifi"], ["Disconnect Lichess", "logout"], ["Back", "back"]], "Board");
+        renderMenu("Settings", [["Lights On", "enable"], ["Lights Off", "disable"], ["Brightness Up", "up"], ["Brightness Down", "down"], ["Brightness " + Math.round((state.ledBrightness || 0.1) * 100) + "%", "level"], ["Orientation " + (state.boardOrientation || "white"), "orientation"], ["Test Mode " + (state.testMode ? "On" : "Off"), "test"], ["Submit Moves " + (state.submitMoveEnabled ? "On" : "Off"), "submit"], ["Diagnostics", "hardware"], ["Board Test", "sensors"], ["LED Test", "leds"], ["Reconnect Wi-Fi", "wifi"], ["Disconnect Lichess", "logout"], ["Back", "back"]], "Board");
       }
       function renderPuzzle() {
         var game = latestState && latestState.game ? latestState.game : {};
         var puzzle = game.puzzle || {};
         var sync = latestState && latestState.sync ? latestState.sync : {matches: false, missing: [], extra: []};
         var actions = [["Start Puzzle", "ready"], ["Submit Puzzle Move", "move"], ["Next Puzzle", "new"], ["Refresh Puzzle", "sync"], ["Back", "menu"]];
-        var actionHtml = '<section class="list compact">';
+        var actionHtml = '<section class="actionBar">';
         for (var i = 0; i < actions.length; i++) actionHtml += '<div class="item' + selectedClass(i) + '"><span>' + actions[i][0] + '</span><small>' + actions[i][1] + '</small></div>';
         actionHtml += '</section>';
-        setHeader("Puzzle", puzzle.status === "complete" ? "Solved" : (sync.matches ? "Ready" : "Set Pieces"));
-        appEl.innerHTML = '<div class="split">' + renderPositionBoard(game.pieces || {}, game.playerColor || "white", gameBoardOrientation(game)) + '<div class="meta"><div>' + escapeHtml(puzzleHelpText(sync, puzzle)) + '</div><div>You are: <code>' + escapeHtml(game.playerColor || "unknown") + '</code></div><div>Board view: <code>' + escapeHtml(gameBoardOrientation(game)) + '</code></div><div>Puzzle: <code>' + escapeHtml(puzzle.id || "none") + '</code></div><div>Rating: <code>' + escapeHtml(puzzle.rating || "--") + '</code></div><div>Status: <code>' + escapeHtml(puzzle.status || game.status || "setup") + '</code></div><div>Turn: <code>' + escapeHtml(game.turn || "white") + '</code></div><div>Move: <code>' + escapeHtml((puzzle.solutionIndex || 0) + "/" + (puzzle.solutionLength || 0)) + '</code></div><div>Themes: <code>' + escapeHtml((puzzle.themes || []).join(", ") || "none") + '</code></div><div>Missing: <code>' + escapeHtml((sync.missing || []).join(", ") || "none") + '</code></div><div>Extra: <code>' + escapeHtml((sync.extra || []).join(", ") || "none") + '</code></div>' + renderDebugRows(game, sync) + actionHtml + '</div></div>';
+        setCompactBoardChrome(true);
+        appEl.innerHTML = '<div class="gameLayout">' + renderPositionBoard(game.pieces || {}, game.playerColor || "white", gameBoardOrientation(game)) + '<div class="gameDetails"><div>' + escapeHtml(puzzleHelpText(sync, puzzle)) + '</div>' + actionHtml + '<div>You are: <code>' + escapeHtml(game.playerColor || "unknown") + '</code></div><div>Puzzle: <code>' + escapeHtml(puzzle.id || "none") + '</code> Rating: <code>' + escapeHtml(puzzle.rating || "--") + '</code></div><div>Status: <code>' + escapeHtml(puzzle.status || game.status || "setup") + '</code> Turn: <code>' + escapeHtml(game.turn || "white") + '</code></div><div>Move: <code>' + escapeHtml((puzzle.solutionIndex || 0) + "/" + (puzzle.solutionLength || 0)) + '</code></div>' + renderDebugRows(game, sync) + '</div></div>';
       }
       function gameHelpText(sync) {
         if (!latestState || !latestState.game || !latestState.game.id) return "Set the physical board first.";
@@ -745,27 +969,55 @@ def create_app(
         else if (kioskState.screen === "wifiError") renderMenu("Wi-Fi Failed", [["Edit Password", "edit"], ["Choose Different Wi-Fi", "wifi"], ["Refresh Wi-Fi List", "scan"]], "Retry");
         else if (kioskState.screen === "lichessSetup") renderLichessSetup();
         else if (kioskState.screen === "mainMenu") renderMenu("Chess Board", mainMenu, latestState && latestState.lichess && latestState.lichess.username ? latestState.lichess.username : "Ready");
-        else if (kioskState.screen === "playMenu") renderMenu("Play", playMenu, "Lichess");
+        else if (kioskState.screen === "onlineMenu") renderMenu("Online Games", onlineMenu, "Choose Time");
+        else if (kioskState.screen === "challengeMenu") renderMenu("Challenge Link", challengeMenu, "Choose Time");
+        else if (kioskState.screen === "challengeWait") renderChallengeWait();
+        else if (kioskState.screen === "onlineWait") renderOnlineWait();
+        else if (kioskState.screen === "computerMenu") renderMenu("Play Computer", computerMenu, "Choose Time");
+        else if (kioskState.screen === "computerLevelMenu") renderMenu("Play Computer", computerLevelMenu, (kioskState.selectedComputerTime && kioskState.selectedComputerTime.label) || "Choose Level");
         else if (kioskState.screen === "tactics") renderMenu("Tactics", [["New Puzzle", "new"], ["Daily Puzzle", "daily"], ["Back", "back"]], "Puzzle");
-        else if (kioskState.screen === "game") { if (latestState && latestState.game && String(latestState.game.mode).indexOf("puzzle") === 0) renderPuzzle(); else renderGame(); }
+        else if (kioskState.screen === "game") { if (kioskState.pendingOnlineGame && (!latestState || !latestState.game || !latestState.game.id)) renderOnlineWait(); else if (latestState && latestState.game && String(latestState.game.mode).indexOf("puzzle") === 0) renderPuzzle(); else renderGame(); }
         else if (kioskState.screen === "puzzle") renderPuzzle();
         else if (kioskState.screen === "settings") renderSettings();
         else if (kioskState.screen === "diagnostics") renderDiagnostics();
         else if (kioskState.screen === "boardTest") renderBoardTest();
         else if (kioskState.screen === "ledTest") renderLedTest();
+        requestAnimationFrame(scrollSelectedIntoView);
       }
       function listLength() {
         if (kioskState.screen === "wifiList") return kioskState.networks.length + 1;
         if (kioskState.screen === "lichessSetup") return 0;
         if (kioskState.screen === "mainMenu") return mainMenu.length;
-        if (kioskState.screen === "playMenu") return playMenu.length;
+        if (kioskState.screen === "onlineMenu") return onlineMenu.length;
+        if (kioskState.screen === "challengeMenu") return challengeMenu.length;
+        if (kioskState.screen === "challengeWait") return 1;
+        if (kioskState.screen === "onlineWait") return 1;
+        if (kioskState.screen === "computerMenu") return computerMenu.length;
+        if (kioskState.screen === "computerLevelMenu") return computerLevelMenu.length;
         if (kioskState.screen === "tactics") return 3;
-        if (kioskState.screen === "game") return 6;
+        if (kioskState.screen === "game") {
+          var game = latestState && latestState.game ? latestState.game : null;
+          if (isGameOver(game)) return 2;
+          return latestState && latestState.submitMoveEnabled ? 5 : 4;
+        }
         if (kioskState.screen === "puzzle") return 4;
-        if (kioskState.screen === "settings") return 10;
+        if (kioskState.screen === "settings") return 14;
         if (kioskState.screen === "ledTest") return 7;
         if (kioskState.screen === "wifiError") return 3;
         return 0;
+      }
+      function gridColumnsForScreen() {
+        if (kioskState.screen === "game") return 3;
+        return 1;
+      }
+      function moveGridSelection(rowDelta, colDelta) {
+        var length = listLength();
+        if (!length) return;
+        var columns = gridColumnsForScreen();
+        var next = kioskState.selected + (rowDelta * columns) + colDelta;
+        if (next < 0) next = 0;
+        if (next >= length) next = length - 1;
+        kioskState.selected = next;
       }
       function moveSelection(delta) { var length = listLength(); if (length) kioskState.selected = (kioskState.selected + delta + length) % length; }
       function moveKeyboard(rowDelta, colDelta) {
@@ -776,7 +1028,27 @@ def create_app(
       function goBack() {
         if (kioskState.screen === "wifiList" && kioskState.setupOverride) { kioskState.setupOverride = false; setScreen("mainMenu"); }
         else if (kioskState.screen === "wifiPassword" || kioskState.screen === "wifiError") setScreen("wifiList");
-        else if (kioskState.screen === "playMenu" || kioskState.screen === "game" || kioskState.screen === "puzzle" || kioskState.screen === "tactics" || kioskState.screen === "settings" || kioskState.screen === "diagnostics" || kioskState.screen === "boardTest" || kioskState.screen === "ledTest") setScreen("mainMenu");
+        else if (kioskState.screen === "puzzle" || kioskState.screen === "tactics") leaveTacticsToGameSetup();
+        else if (kioskState.screen === "diagnostics" || kioskState.screen === "boardTest" || kioskState.screen === "ledTest") setScreen("settings");
+        else if (kioskState.screen === "computerLevelMenu") setScreen("computerMenu");
+        else if (kioskState.screen === "challengeWait") cancelChallengeLink();
+        else if (kioskState.screen === "onlineWait") stopOnlineWait();
+        else if (kioskState.screen === "challengeMenu") setScreen("onlineMenu");
+        else if (kioskState.screen === "onlineMenu" || kioskState.screen === "computerMenu" || kioskState.screen === "game" || kioskState.screen === "settings") setScreen("mainMenu");
+      }
+      function leaveTacticsToGameSetup() {
+        kioskState.pendingStart = null;
+        kioskState.message = "Set up pieces for a game";
+        kioskState.screen = "mainMenu";
+        request("POST", "/api/game/reset-setup", {}, function (state) {
+          if (!latestState) latestState = {};
+          latestState.game = state.game;
+          latestState.sync = state.sync;
+          latestState.leds = state.leds;
+          renderScreen();
+        }, function () {
+          refresh();
+        });
       }
       function activateSelected() {
         if (kioskState.screen === "wifiList") {
@@ -791,7 +1063,12 @@ def create_app(
         else if (kioskState.screen === "wifiError") { if (kioskState.selected === 0) setScreen("wifiPassword"); else if (kioskState.selected === 1) setScreen("wifiList"); else scanWifi(); }
         else if (kioskState.screen === "lichessSetup") refresh();
         else if (kioskState.screen === "mainMenu") setScreen(mainMenu[kioskState.selected][1]);
-        else if (kioskState.screen === "playMenu") playMenu[kioskState.selected][1]();
+        else if (kioskState.screen === "onlineMenu") onlineMenu[kioskState.selected][1]();
+        else if (kioskState.screen === "challengeMenu") challengeMenu[kioskState.selected][1]();
+        else if (kioskState.screen === "challengeWait") cancelChallengeLink();
+        else if (kioskState.screen === "onlineWait") stopOnlineWait();
+        else if (kioskState.screen === "computerMenu") computerMenu[kioskState.selected][1]();
+        else if (kioskState.screen === "computerLevelMenu") computerLevelMenu[kioskState.selected][1]();
         else if (kioskState.screen === "game") gameAction(kioskState.selected);
         else if (kioskState.screen === "puzzle") puzzleAction(kioskState.selected);
         else if (kioskState.screen === "tactics") { if (kioskState.selected === 0) fetchPuzzle("/api/puzzles/next"); else if (kioskState.selected === 1) fetchPuzzle("/api/puzzles/daily"); else goBack(); }
@@ -827,8 +1104,12 @@ def create_app(
         else if (index === 4) saveSettings({ledBrightness: state.ledBrightness || 0.1});
         else if (index === 5) saveSettings({boardOrientation: state.boardOrientation === "black" ? "white" : "black"});
         else if (index === 6) saveSettings({testMode: !state.testMode});
-        else if (index === 7) { kioskState.setupOverride = true; kioskState.networks = []; setScreen("wifiList"); scanWifi(); }
-        else if (index === 8) request("POST", "/api/lichess/logout", null, function () { refresh(); });
+        else if (index === 7) saveSettings({submitMoveEnabled: !state.submitMoveEnabled});
+        else if (index === 8) setScreen("diagnostics");
+        else if (index === 9) setScreen("boardTest");
+        else if (index === 10) setScreen("ledTest");
+        else if (index === 11) { kioskState.setupOverride = true; kioskState.networks = []; setScreen("wifiList"); scanWifi(); }
+        else if (index === 12) request("POST", "/api/lichess/logout", null, function () { refresh(); });
         else goBack();
       }
       function ledTestAction(index) {
@@ -842,36 +1123,142 @@ def create_app(
       }
       function runLedTest(pattern, label) { request("POST", "/api/led/test", {pattern: pattern}, function () { kioskState.ledTest = label; refresh(); }, function () { kioskState.ledTest = "LED test unavailable"; renderScreen(); }); }
       function saveSettings(body) { request("POST", "/api/settings", body, function () { refresh(); }); }
-      function startComputerGame() {
-        kioskState.pendingStart = null;
-        kioskState.message = "Starting computer game...";
+      function startChallengeLink(timeMinutes, increment, label) {
+        kioskState.pendingOnlineGame = true;
+        kioskState.challengeUrl = "";
+        kioskState.challengeId = "";
+        kioskState.message = "Creating " + label + " challenge...";
+        kioskState.screen = "challengeWait";
+        kioskState.selected = 0;
         renderScreen();
-        request("POST", "/api/play/ai", {level: 3, clockLimit: 180, increment: 2}, function () {
-          kioskState.message = "Computer game started";
-          kioskState.pendingStart = null;
-          kioskState.screen = "game";
-          kioskState.selected = 0;
-          refresh();
+        request("POST", "/api/play/open", {timeMinutes: timeMinutes, increment: increment}, function (result) {
+          kioskState.challengeUrl = (result && result.url) ? result.url : "Challenge created";
+          kioskState.challengeId = (result && result.id) ? result.id : "";
+          kioskState.message = "Waiting for opponent to accept...";
+          pollOnlineGame();
+          renderScreen();
         }, function (xhr) {
-          if (xhr.status === 409) {
-            kioskState.pendingStart = "computer";
-            kioskState.screen = "game";
-            kioskState.selected = 0;
-            kioskState.message = errorMessage(xhr, "Set the physical board first. The game will start when ready.");
-            refresh();
-            return;
-          }
+          kioskState.pendingOnlineGame = false;
           kioskState.message = "Error: " + errorMessage(xhr);
           renderScreen();
         });
       }
+      function cancelChallengeLink() {
+        kioskState.pendingOnlineGame = false;
+        if (!kioskState.challengeId) {
+          kioskState.challengeUrl = "";
+          setScreen("onlineMenu");
+          return;
+        }
+        var id = kioskState.challengeId;
+        kioskState.message = "Canceling challenge...";
+        request("POST", "/api/play/challenge/cancel", {challengeId: id}, function () {
+          kioskState.challengeId = "";
+          kioskState.challengeUrl = "";
+          kioskState.message = "Challenge canceled";
+          setScreen("onlineMenu");
+        }, function (xhr) {
+          kioskState.message = "Cancel failed: " + errorMessage(xhr);
+          renderScreen();
+        });
+      }
+      function stopOnlineWait() {
+        kioskState.pendingOnlineGame = false;
+        kioskState.message = "Stopped waiting";
+        setScreen("onlineMenu");
+      }
+      function startOnlineGame(body, label) {
+        kioskState.pendingOnlineGame = true;
+        kioskState.message = "Seeking " + label + "...";
+        kioskState.screen = "onlineWait";
+        kioskState.selected = 0;
+        renderScreen();
+        request("POST", "/api/play/seek", body, function () {
+          kioskState.message = "Waiting for Lichess pairing...";
+          pollOnlineGame();
+          renderScreen();
+        }, function (xhr) {
+          kioskState.pendingOnlineGame = false;
+          kioskState.message = "Error: " + errorMessage(xhr);
+          renderScreen();
+        });
+      }
+      function startComputerTime(clockLimit, increment, label) {
+        kioskState.selectedComputerTime = {clockLimit: clockLimit, increment: increment, label: label || "Computer game"};
+        setScreen("computerLevelMenu");
+      }
+      function startComputerGame(level) {
+        var time = kioskState.selectedComputerTime || {clockLimit: 180, increment: 2, label: "Blitz 3+2"};
+        var label = "Level " + level + " AI " + time.label;
+        var payload = {level: level, clockLimit: time.clockLimit, increment: time.increment};
+        kioskState.pendingStart = null;
+        kioskState.pendingStartPayload = null;
+        kioskState.pendingStartLabel = label;
+        kioskState.pendingOnlineGame = false;
+        kioskState.message = "Starting " + label + "...";
+        kioskState.screen = "game";
+        kioskState.selected = 0;
+        renderScreen();
+        request("POST", "/api/play/ai", payload, function (state) {
+          finishComputerStart(state);
+        }, function (xhr) {
+          if (xhr.status === 409) {
+            kioskState.pendingStart = "computer";
+            kioskState.pendingStartPayload = payload;
+            kioskState.screen = "game";
+            kioskState.selected = 0;
+            kioskState.message = errorMessage(xhr, "Set the physical board first. " + kioskState.pendingStartLabel + " will start when ready.");
+            refresh();
+            return;
+          }
+          kioskState.pendingStartPayload = null;
+          kioskState.pendingStartLabel = "";
+          kioskState.message = "Error: " + errorMessage(xhr);
+          renderScreen();
+        });
+      }
+      function finishComputerStart(state) {
+        if (!latestState) latestState = {};
+        if (state && state.game) mergeGame(state.game);
+        if (state && state.sync) latestState.sync = state.sync;
+        kioskState.message = "Computer game started";
+        kioskState.pendingStart = null;
+        kioskState.pendingStartPayload = null;
+        kioskState.pendingStartLabel = "";
+        kioskState.pendingStartInFlight = false;
+        kioskState.screen = "game";
+        kioskState.selected = 0;
+        renderScreen();
+      }
       function gameAction(index) {
-        if (index === 0) submitPhysicalMove();
-        else if (index === 1) drawGame("yes");
-        else if (index === 2) drawGame("no");
-        else if (index === 3) resignGame();
-        else if (index === 4) refreshLichessGame();
-        else goBack();
+        var game = latestState && latestState.game ? latestState.game : null;
+        if (isGameOver(game)) {
+          if (index === 0) leaveFinishedGame();
+          else refreshLichessGame();
+          return;
+        }
+        var offset = latestState && latestState.submitMoveEnabled ? 1 : 0;
+        if (offset && index === 0) submitPhysicalMove();
+        else if (index === offset) drawGame("yes");
+        else if (index === offset + 1) drawGame("no");
+        else if (index === offset + 2) resignGame();
+        else if (index === offset + 3) refreshLichessGame();
+      }
+      function leaveFinishedGame() {
+        kioskState.pendingOnlineGame = false;
+        kioskState.pendingStart = null;
+        kioskState.pendingStartPayload = null;
+        kioskState.pendingStartLabel = "";
+        kioskState.message = "Game cleared";
+        request("POST", "/api/game/leave-finished", {}, function (state) {
+          if (!latestState) latestState = {};
+          latestState.game = state.game;
+          latestState.sync = state.sync;
+          latestState.leds = state.leds;
+          setScreen("mainMenu");
+        }, function () {
+          setScreen("mainMenu");
+        });
       }
       function submitPhysicalMove() {
         kioskState.message = "Submitting move...";
@@ -880,6 +1267,29 @@ def create_app(
           kioskState.message = result && result.submitted ? "Move sent: " + result.move : (result && result.message ? result.message : "That button asked the board to check the physical move. Lift one piece, move it, then press Submit Move.");
           refresh();
         }, function (xhr) { kioskState.message = "Error: " + (xhr.responseText || xhr.status); renderScreen(); });
+      }
+      function autoSubmitDetectedMove() {
+        if (!latestState || latestState.submitMoveEnabled || kioskState.screen !== "game") return;
+        var game = latestState.game || {};
+        var move = latestState.pendingMove;
+        if (!move || move.kind !== "move" || !move.uci || !game.id || isGameOver(game)) {
+          if (!move) kioskState.autoSubmitMoveKey = null;
+          return;
+        }
+        var key = game.id + ":" + move.uci;
+        if (kioskState.autoSubmitInFlight || kioskState.autoSubmitMoveKey === key) return;
+        kioskState.autoSubmitMoveKey = key;
+        kioskState.autoSubmitInFlight = true;
+        kioskState.message = "Sending move " + move.uci + "...";
+        request("POST", "/api/game/submit-physical", {}, function (result) {
+          kioskState.autoSubmitInFlight = false;
+          kioskState.message = result && result.submitted ? "Move sent: " + result.move : (result && result.message ? result.message : "Move was not ready");
+          refresh();
+        }, function (xhr) {
+          kioskState.autoSubmitInFlight = false;
+          kioskState.message = "Error: " + (xhr.responseText || xhr.status);
+          renderScreen();
+        });
       }
       function refreshLichessGame() {
         kioskState.message = "Refreshing Lichess...";
@@ -954,6 +1364,35 @@ def create_app(
       function refreshPuzzle() { kioskState.message = "Puzzle refreshed"; refresh(); }
       function playAction(path, body) { request("POST", path, body || {}, function () { kioskState.message = "Sent to Lichess"; refresh(); }, function (xhr) { kioskState.message = "Error: " + (xhr.responseText || xhr.status); renderScreen(); }); }
       function formatClock(ms) { if (ms === null || ms === undefined) return "--"; var total = Math.max(0, Math.floor(ms / 1000)); return Math.floor(total / 60) + ":" + String(total % 60).replace(/^([0-9])$/, "0$1"); }
+      function clockValue(game, color) {
+        var clock = game && game.clock ? game.clock : {};
+        return color === "white" ? clock.whiteMs : clock.blackMs;
+      }
+      function rememberClockBase(game) {
+        if (!game) return;
+        var whiteMs = clockValue(game, "white");
+        var blackMs = clockValue(game, "black");
+        if (!clockBase || clockBase.whiteMs !== whiteMs || clockBase.blackMs !== blackMs || clockBase.turn !== game.turn || clockBase.status !== game.status) {
+          clockBase = {whiteMs: whiteMs, blackMs: blackMs, turn: game.turn, status: game.status, at: Date.now()};
+        }
+      }
+      function displayClockMs(game, color) {
+        var value = clockValue(game, color);
+        if (value === null || value === undefined) return value;
+        if (!clockBase) rememberClockBase(game);
+        if (clockBase && game && game.status === "started" && game.turn === color && clockBase.turn === game.turn) {
+          return Math.max(0, value - (Date.now() - clockBase.at));
+        }
+        return value;
+      }
+      function mergeGame(game) {
+        if (!latestState) latestState = {};
+        latestState.game = game;
+        rememberClockBase(game);
+      }
+      function tickClocks() {
+        if (kioskState.screen === "game" && latestState && latestState.game && latestState.game.status === "started") renderScreen();
+      }
       function handleCommand(command) {
         kioskState.lastCommand = command;
         if (kioskState.screen === "wifiPassword") {
@@ -963,19 +1402,26 @@ def create_app(
           else if (command === "right") moveKeyboard(0, 1);
           else if (command === "select") activateSelected();
         } else {
-          if (command === "up") moveSelection(-1);
-          else if (command === "down") moveSelection(1);
-          else if (command === "left") goBack();
-          else if (command === "right" || command === "select") activateSelected();
+          if (command === "up") moveGridSelection(-1, 0);
+          else if (command === "down") moveGridSelection(1, 0);
+          else if (command === "left") moveGridSelection(0, -1);
+          else if (command === "right") moveGridSelection(0, 1);
+          else if (command === "select") activateSelected();
         }
         renderScreen();
       }
       function pollInput() { request("GET", "/api/input", null, function (commands) { for (var i = 0; commands && i < commands.length; i++) handleCommand(commands[i]); }, function () { kioskState.lastCommand = "input offline"; }); }
-      function refresh() { request("GET", "/api/state", null, function (state) { latestState = state; syncStage(); renderScreen(); }, function (xhr) { renderBootError(xhr); }); }
+      function refresh() { request("GET", "/api/state", null, function (state) { latestState = state; rememberClockBase(latestState.game); syncStage(); renderScreen(); }, function (xhr) { renderBootError(xhr); }); }
       var liveRefreshInFlight = false;
       var lichessGameRefreshInFlight = false;
+      var onlineGamePollInFlight = false;
       function isLiveScreen() {
         return kioskState.screen === "game" || kioskState.screen === "puzzle" || kioskState.screen === "diagnostics" || kioskState.screen === "boardTest";
+      }
+      function shouldPollLive() {
+        if (isLiveScreen() || kioskState.pendingStart) return true;
+        var game = latestState && latestState.game ? latestState.game : null;
+        return !!(game && game.mode === "game" && game.status === "idle");
       }
       function mergeLiveState(state) {
         if (!latestState) latestState = {};
@@ -983,17 +1429,19 @@ def create_app(
         latestState.sensors = state.sensors;
         latestState.sensorDetails = state.sensorDetails;
         latestState.leds = state.leds;
-        latestState.game = state.game;
+        mergeGame(state.game);
         latestState.sync = state.sync;
+        latestState.pendingMove = state.pendingMove;
       }
       function refreshLive() {
-        if (liveRefreshInFlight || !isLiveScreen()) return;
+        if (liveRefreshInFlight || !shouldPollLive()) return;
         liveRefreshInFlight = true;
         request("GET", "/api/live-state", null, function (state) {
           mergeLiveState(state);
           maybeRunPendingStart();
+          autoSubmitDetectedMove();
           liveRefreshInFlight = false;
-          renderScreen();
+          if (isLiveScreen()) renderScreen();
         }, function () {
           liveRefreshInFlight = false;
         });
@@ -1013,12 +1461,9 @@ def create_app(
             kioskState.message = errorMessage(xhr, "Still waiting for the board to match.");
           });
         } else if (kioskState.pendingStart === "computer") {
-          request("POST", "/api/play/ai", {level: 3, clockLimit: 180, increment: 2}, function () {
-            kioskState.pendingStart = null;
-            kioskState.pendingStartInFlight = false;
-            kioskState.message = "Computer game started";
-            kioskState.screen = "game";
-            refresh();
+          var payload = kioskState.pendingStartPayload || {level: 3, clockLimit: 180, increment: 2};
+          request("POST", "/api/play/ai", payload, function (state) {
+            finishComputerStart(state);
           }, function (xhr) {
             kioskState.pendingStartInFlight = false;
             kioskState.message = errorMessage(xhr, "Still waiting for the board to match.");
@@ -1030,12 +1475,37 @@ def create_app(
         lichessGameRefreshInFlight = true;
         request("POST", "/api/game/refresh", {}, function (state) {
           if (!latestState) latestState = {};
-          latestState.game = state.game;
+          mergeGame(state.game);
           latestState.sync = state.sync;
           lichessGameRefreshInFlight = false;
           renderScreen();
         }, function () {
           lichessGameRefreshInFlight = false;
+        });
+      }
+      function pollOnlineGame() {
+        if (onlineGamePollInFlight || !kioskState.pendingOnlineGame) return;
+        onlineGamePollInFlight = true;
+        request("POST", "/api/play/sync-active", {}, function (state) {
+          onlineGamePollInFlight = false;
+          if (state && state.matched) {
+            kioskState.pendingOnlineGame = false;
+            kioskState.challengeUrl = "";
+            kioskState.challengeId = "";
+            kioskState.message = "Online game ready";
+            if (!latestState) latestState = {};
+            mergeGame(state.game);
+            latestState.sync = state.sync;
+            kioskState.screen = "game";
+            renderScreen();
+          } else {
+            kioskState.message = state && state.message ? state.message : "Waiting for Lichess pairing";
+            renderScreen();
+          }
+        }, function (xhr) {
+          onlineGamePollInFlight = false;
+          kioskState.message = "Error: " + errorMessage(xhr);
+          renderScreen();
         });
       }
       function renderBootError(error) { setHeader("Chess Board", "Backend Error"); appEl.innerHTML = '<section class="list"><div class="item selected"><span>Waiting for backend</span><small>retrying</small></div></section><div class="status">Could not load /api/state</div>'; }
@@ -1048,7 +1518,9 @@ def create_app(
       setInterval(refresh, 2000);
       setInterval(refreshLive, 60);
       setInterval(pollLichessGame, 2000);
+      setInterval(pollOnlineGame, 2000);
       setInterval(pollInput, 80);
+      setInterval(tickClocks, 250);
     </script>
   </body>
 </html>
@@ -1067,6 +1539,7 @@ def create_app(
             led_controller,
             test_mode=config.test_mode,
             board_orientation=config.board_orientation,
+            submit_move_enabled=config.submit_move_enabled,
         )
 
     @app.get("/api/sensors")
@@ -1247,6 +1720,7 @@ def create_app(
                 board_orientation=payload.boardOrientation,
                 device_name=payload.deviceName,
                 test_mode=payload.testMode,
+                submit_move_enabled=payload.submitMoveEnabled,
             )
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
@@ -1306,7 +1780,8 @@ def create_app(
         config = config_store.load()
         if not config.lichess_token:
             raise HTTPException(status_code=401, detail="Lichess is not connected")
-        return LichessClient(config.lichess_token)
+        factory = lichess_client_factory or LichessClient
+        return factory(config.lichess_token)
 
     @app.post("/api/play/friend")
     def play_friend(payload: FriendChallengeRequest):
@@ -1365,23 +1840,96 @@ def create_app(
 
     @app.post("/api/play/seek")
     def play_seek(payload: SeekRequest):
-        return _lichess_client().create_seek(
-            time_minutes=payload.timeMinutes,
-            increment=payload.increment,
-            rated=payload.rated,
-            color=payload.color,
-            variant=payload.variant,
-        )
+        if not _board_seek_supported(payload.timeMinutes, payload.increment):
+            raise HTTPException(status_code=400, detail=_unsupported_board_seek_detail())
+        client = _lichess_client()
+
+        def run_seek():
+            try:
+                client.create_seek(
+                    time_minutes=payload.timeMinutes,
+                    increment=payload.increment,
+                    rated=payload.rated,
+                    color=payload.color,
+                    variant=payload.variant,
+                )
+            except Exception:
+                pass
+
+        if lichess_client_factory is None:
+            threading.Thread(target=run_seek, daemon=True).start()
+        else:
+            run_seek()
+        return {"ok": True, "message": "Seek started"}
+
+    @app.post("/api/play/sync-active")
+    def sync_active_online_game():
+        config = config_store.load()
+        client = _lichess_client()
+        active = client.active_games()
+        if not active:
+            return {"matched": False, "message": "Waiting for Lichess pairing"}
+        game_id = _active_game_id(active[0])
+        if not game_id:
+            return {"matched": False, "message": "Waiting for Lichess game id"}
+        event = client.stream_game_state(game_id)
+        game_session.update_from_lichess_state(event)
+        username_color = _player_color_from_username(config.lichess_username, game_session)
+        active_color = _player_color_from_active_game(active[0])
+        if username_color:
+            game_session.set_player_color(username_color, f"lichess username matched {username_color}")
+        elif active_color:
+            game_session.set_player_color(active_color, f"active game color {active_color}")
+        else:
+            game_session.set_player_color(None, "unknown")
+        snapshot = _read_oriented_snapshot(sensor_reader, config.board_orientation, game_session)
+        if game_session.sync_status(snapshot)["matches"]:
+            game_session.mark_synced(snapshot)
+        return {
+            "matched": True,
+            "game": game_session.public_state(),
+            "sync": game_session.sync_status(snapshot),
+        }
 
     @app.post("/api/play/open")
     def play_open(payload: SeekRequest):
-        return _lichess_client().open_challenge(
+        created = _lichess_client().open_challenge(
             clock_limit=payload.timeMinutes * 60,
             increment=payload.increment,
             rated=payload.rated,
             name="ChessBoard",
             variant=payload.variant,
         )
+        challenge = created.get("challenge", {}) if isinstance(created, dict) else {}
+        url = created.get("url") if isinstance(created, dict) else None
+        challenge_id = created.get("id") if isinstance(created, dict) else None
+        return {"ok": True, "id": challenge_id or challenge.get("id"), "url": url or challenge.get("url"), "challenge": challenge or created}
+
+    @app.post("/api/play/challenge/cancel")
+    def cancel_open_challenge(payload: ChallengeCancelRequest):
+        challenge_id = payload.challengeId.strip()
+        if not challenge_id:
+            raise HTTPException(status_code=400, detail="Challenge id is required")
+        try:
+            _lichess_client().cancel_challenge(challenge_id)
+        except Exception as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        return {"ok": True}
+
+    def _active_game_id(game: dict[str, Any]) -> str | None:
+        game_id = game.get("gameId") or game.get("id")
+        if game_id:
+            return str(game_id)
+        full_id = game.get("fullId")
+        if full_id:
+            return str(full_id)[:8]
+        return None
+
+    def _player_color_from_active_game(game: dict[str, Any]) -> str | None:
+        color = str(game.get("color") or "").lower()
+        if color in {"white", "black"}:
+            return color
+        return None
 
     @app.post("/api/puzzles/daily")
     def daily_puzzle():
@@ -1455,6 +2003,31 @@ def create_app(
         game_session.update_from_lichess_state(payload.model_dump(exclude_none=True))
         return game_session.public_state()
 
+    def _reset_game_setup_response():
+        game_session.reset_to_game_setup()
+        config = config_store.load()
+        snapshot = _read_oriented_snapshot(sensor_reader, config.board_orientation, game_session)
+        update_led_display(
+            led_controller,
+            game_session,
+            game_session.sync_status(snapshot),
+            snapshot,
+            test_mode=config.test_mode,
+        )
+        return {
+            "game": game_session.public_state(),
+            "sync": game_session.sync_status(snapshot),
+            "leds": led_controller.status(),
+        }
+
+    @app.post("/api/game/reset-setup")
+    def reset_game_setup():
+        return _reset_game_setup_response()
+
+    @app.post("/api/game/leave-finished")
+    def leave_finished_game():
+        return _reset_game_setup_response()
+
     @app.post("/api/game/refresh")
     def refresh_game():
         client, game_id = _lichess_for_current_game()
@@ -1474,7 +2047,8 @@ def create_app(
         client, game_id = _lichess_for_current_game()
         config = config_store.load()
         snapshot = _read_oriented_snapshot(sensor_reader, config.board_orientation, game_session)
-        result = game_session.detect_move_from_last_snapshot(snapshot, allow_unsynced=config.test_mode)
+        _reconciled_sync_status(game_session, snapshot)
+        result = game_session.detect_move_from_last_snapshot(snapshot, allow_unsynced=True)
         if result.kind == "none":
             return {"submitted": False, "kind": result.kind, "message": "No physical move detected"}
         if result.kind != "move" or not result.uci:
@@ -1484,10 +2058,6 @@ def create_app(
         except Exception as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
         game_session.apply_submitted_move(result.uci, snapshot)
-        try:
-            game_session.update_from_lichess_state(client.stream_game_state(game_id))
-        except Exception:
-            pass
         return {
             "submitted": True,
             "move": result.uci,

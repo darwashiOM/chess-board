@@ -198,7 +198,10 @@ class LichessClient:
             "color": color,
             "variant": variant,
         })
-        data = response.json()
+        try:
+            data = response.json()
+        except json.JSONDecodeError:
+            return {"ok": True}
         return data or {"ok": True}
 
     def open_challenge(
@@ -218,6 +221,9 @@ class LichessClient:
             "variant": variant,
         })
         return response.json()
+
+    def cancel_challenge(self, challenge_id: str) -> None:
+        self._request("POST", f"/api/challenge/{parse.quote(challenge_id)}/cancel")
 
     def next_puzzle(self, difficulty: str | None = None) -> dict[str, Any]:
         path = "/api/puzzle/next"

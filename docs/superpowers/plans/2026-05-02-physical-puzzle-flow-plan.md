@@ -22,4 +22,3 @@
 - Copy changed files to the Pi.
 - Restart `chessboard.service`.
 - Run Pi tests and verify `/api/state`.
-

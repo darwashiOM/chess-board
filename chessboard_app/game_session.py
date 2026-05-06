@@ -47,6 +47,7 @@ class GameSession:
     puzzle_solution: list[str] = field(default_factory=list)
     puzzle_index: int = 0
     draw_offer: str | None = None
+    winner: str | None = None
     display_board: chess.Board | None = None
 
     def update_from_lichess_state(self, event: Mapping[str, Any]) -> None:
@@ -68,6 +69,28 @@ class GameSession:
         self.clock = parse_clocks(state)
         self.status = state.get("status", event.get("status", "started"))
         self.draw_offer = _draw_offer_from_state(state)
+        self.winner = _winner_from_state(state)
+
+    def reset_to_game_setup(self) -> None:
+        self.game_id = None
+        self.board = chess.Board()
+        self.players = {
+            "white": {"name": None, "rating": None},
+            "black": {"name": None, "rating": None},
+        }
+        self.clock = {"whiteMs": None, "blackMs": None}
+        self.status = "idle"
+        self.last_move = None
+        self.player_color = None
+        self.player_color_reason = None
+        self.last_occupancy = None
+        self.mode = "game"
+        self.puzzle = None
+        self.puzzle_solution = []
+        self.puzzle_index = 0
+        self.draw_offer = None
+        self.winner = None
+        self.display_board = None
 
     def expected_occupancy(self) -> dict[str, bool]:
         return expected_occupancy_from_board(self.board)
@@ -101,8 +124,32 @@ class GameSession:
         move = chess.Move.from_uci(uci)
         self.board.push(move)
         self.last_move = uci
-        self.last_occupancy = dict(occupancy)
+        self.last_occupancy = self.expected_occupancy()
         self.display_board = None
+
+    def copied_last_move_matches(self, occupancy: Mapping[str, bool]) -> bool:
+        if not self.last_move or not self.board.move_stack:
+            return False
+        expected_after = self.expected_occupancy()
+        if self.last_occupancy is not None and all(
+            bool(self.last_occupancy.get(square, False)) == expected_after[square]
+            for square in chess.SQUARE_NAMES
+        ):
+            return False
+        previous = self.board.copy()
+        try:
+            move = previous.pop()
+        except IndexError:
+            return False
+        expected_before = expected_occupancy_from_board(previous)
+        required = {
+            square
+            for square in chess.SQUARE_NAMES
+            if expected_before[square] != expected_after[square]
+        }
+        required.add(chess.square_name(move.from_square))
+        required.add(chess.square_name(move.to_square))
+        return all(bool(occupancy.get(square, False)) == expected_after[square] for square in required)
 
     def load_puzzle(self, payload: Mapping[str, Any]) -> None:
         game = payload.get("game", {})
@@ -121,6 +168,7 @@ class GameSession:
             "puzzle side to move after PGN",
         )
         self.draw_offer = None
+        self.winner = None
         self.puzzle_solution = list(puzzle.get("solution", []))
         self.puzzle_index = 0
         self.puzzle = {
@@ -222,6 +270,7 @@ class GameSession:
             "players": self.players,
             "playerColor": self.player_color,
             "drawOffer": self.draw_offer,
+            "winner": self.winner,
             "pieces": piece_map(self.display_board or self.board),
             "puzzle": self._public_puzzle(),
             "debug": self.debug_state(),
@@ -233,6 +282,7 @@ class GameSession:
             "playerColorReason": self.player_color_reason,
             "turn": "white" if self.board.turn == chess.WHITE else "black",
             "lastMove": self.last_move,
+            "winner": self.winner,
             "fen": self.board.fen(),
             "lastOccupancyCount": sum(1 for occupied in (self.last_occupancy or {}).values() if occupied),
         }
@@ -293,6 +343,11 @@ def _players_from_puzzle_game(game: Mapping[str, Any]) -> dict[str, dict[str, An
         if color in players:
             players[color] = _player_public(player)
     return players
+
+
+def _winner_from_state(state: Mapping[str, Any]) -> str | None:
+    winner = state.get("winner")
+    return winner if winner in {"white", "black"} else None
 
 
 def _draw_offer_from_state(state: Mapping[str, Any]) -> str | None:

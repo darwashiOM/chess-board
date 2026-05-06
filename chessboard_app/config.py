@@ -19,6 +19,7 @@ class AppConfig:
     leds_enabled: bool = False
     led_brightness: float = 0.1
     test_mode: bool = False
+    submit_move_enabled: bool = False
 
 
 class AppConfigStore:
@@ -65,6 +66,7 @@ class AppConfigStore:
         device_name: str | None = None,
         led_brightness: float | None = None,
         test_mode: bool | None = None,
+        submit_move_enabled: bool | None = None,
     ) -> AppConfig:
         config = self.load()
         if leds_enabled is not None:
@@ -85,6 +87,8 @@ class AppConfigStore:
             config.led_brightness = brightness
         if test_mode is not None:
             config.test_mode = bool(test_mode)
+        if submit_move_enabled is not None:
+            config.submit_move_enabled = bool(submit_move_enabled)
         self.save(config)
         return config
 
@@ -97,6 +101,7 @@ class AppConfigStore:
             "ledsEnabled": config.leds_enabled,
             "ledBrightness": config.led_brightness,
             "testMode": config.test_mode,
+            "submitMoveEnabled": config.submit_move_enabled,
             "lichessTokenUrl": f"https://lichess.org/account/oauth/token/create?{token_query}",
             "lichess": {
                 "connected": config.lichess_token is not None,

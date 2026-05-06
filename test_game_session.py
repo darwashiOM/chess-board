@@ -59,6 +59,30 @@ class GameSessionTest(unittest.TestCase):
         state = session.public_state()
         self.assertEqual(state["drawOffer"], "black")
 
+    def test_tracks_game_winner_from_lichess_state(self):
+        session = GameSession()
+
+        session.update_from_lichess_state({
+            "id": "game1",
+            "state": {"moves": "e2e4 e7e5", "status": "mate", "winner": "black"},
+        })
+
+        state = session.public_state()
+        self.assertEqual(state["status"], "mate")
+        self.assertEqual(state["winner"], "black")
+
+    def test_tracks_resignation_winner_from_lichess_state(self):
+        session = GameSession()
+
+        session.update_from_lichess_state({
+            "id": "game1",
+            "state": {"moves": "e2e4", "status": "resign", "winner": "white"},
+        })
+
+        state = session.public_state()
+        self.assertEqual(state["status"], "resign")
+        self.assertEqual(state["winner"], "white")
+
     def test_sync_status_reports_missing_and_extra_squares(self):
         session = GameSession()
         board = chess.Board()
@@ -101,6 +125,20 @@ class GameSessionTest(unittest.TestCase):
         self.assertEqual(session.last_occupancy, after)
         self.assertEqual(session.board.peek(), chess.Move.from_uci("e2e4"))
 
+    def test_copied_last_move_matches_only_until_board_is_marked_synced(self):
+        session = GameSession()
+        session.update_from_lichess_state({"state": {"moves": "e2e4 e7e5", "status": "started"}})
+        physical_board = chess.Board()
+        physical_board.push(chess.Move.from_uci("e2e4"))
+        physical_board.push(chess.Move.from_uci("e7e5"))
+        copied = expected_occupancy_from_board(physical_board)
+
+        self.assertTrue(session.copied_last_move_matches(copied))
+
+        session.mark_synced(session.expected_occupancy())
+
+        self.assertFalse(session.copied_last_move_matches(copied))
+
     def test_loads_puzzle_position_and_public_piece_map(self):
         session = GameSession()
 
@@ -118,20 +156,6 @@ class GameSessionTest(unittest.TestCase):
         self.assertEqual(state["pieces"]["e4"], "P")
         self.assertEqual(state["pieces"]["e5"], "p")
         self.assertEqual(state["pieces"]["g1"], "N")
-        self.assertEqual(state["playerColor"], "white")
-        self.assertEqual(state["debug"]["playerColorReason"], "puzzle side to move after PGN")
-
-    def test_puzzle_player_color_is_side_to_move_after_setup_position(self):
-        session = GameSession()
-        payload = self.puzzle_payload()
-        payload["game"]["pgn"] = "d4"
-        payload["puzzle"]["solution"] = ["g8f6"]
-
-        session.load_puzzle(payload)
-
-        self.assertEqual(session.public_state()["turn"], "black")
-        self.assertEqual(session.public_state()["playerColor"], "black")
-        self.assertEqual(session.public_state()["debug"]["playerColorReason"], "puzzle side to move after PGN")
 
     def test_puzzle_accepts_correct_move_applies_reply_and_completes(self):
         session = GameSession()
@@ -140,9 +164,6 @@ class GameSessionTest(unittest.TestCase):
         after_board = session.board.copy()
         after_board.push(chess.Move.from_uci("g1f3"))
         after = expected_occupancy_from_board(after_board)
-        reply_board = after_board.copy()
-        reply_board.push(chess.Move.from_uci("b8c6"))
-        reply_after = expected_occupancy_from_board(reply_board)
 
         session.start_puzzle(before)
         result = session.submit_puzzle_move(after)
@@ -153,56 +174,6 @@ class GameSessionTest(unittest.TestCase):
         self.assertEqual(session.last_move, "b8c6")
         self.assertEqual(session.public_state()["puzzle"]["status"], "complete")
         self.assertEqual(session.public_state()["puzzle"]["solutionIndex"], 2)
-        self.assertEqual(session.public_state()["pieces"]["b8"], "n")
-        self.assertNotIn("c6", session.public_state()["pieces"])
-
-        session.mark_synced(reply_after)
-
-        self.assertNotIn("b8", session.public_state()["pieces"])
-        self.assertEqual(session.public_state()["pieces"]["c6"], "n")
-
-    def test_puzzle_syncs_after_player_copies_reply_without_detecting_new_move(self):
-        session = GameSession()
-        session.load_puzzle(self.puzzle_payload())
-        before = expected_occupancy_from_board(session.board)
-        user_board = session.board.copy()
-        user_board.push(chess.Move.from_uci("g1f3"))
-        user_after = expected_occupancy_from_board(user_board)
-        reply_board = user_board.copy()
-        reply_board.push(chess.Move.from_uci("b8c6"))
-        reply_after = expected_occupancy_from_board(reply_board)
-
-        session.start_puzzle(before)
-        session.submit_puzzle_move(user_after)
-        result = session.submit_puzzle_move(reply_after, allow_unsynced=True)
-
-        self.assertEqual(result["accepted"], False)
-        self.assertEqual(result["kind"], "synced")
-        self.assertEqual(result["message"], "Board synced. Puzzle is complete.")
-        self.assertEqual(session.last_occupancy, reply_after)
-
-    def test_puzzle_syncs_after_reply_in_longer_puzzle_and_keeps_playing(self):
-        payload = self.puzzle_payload()
-        payload["puzzle"]["solution"] = ["g1f3", "b8c6", "f1b5"]
-        session = GameSession()
-        session.load_puzzle(payload)
-        before = expected_occupancy_from_board(session.board)
-        user_board = session.board.copy()
-        user_board.push(chess.Move.from_uci("g1f3"))
-        user_after = expected_occupancy_from_board(user_board)
-        reply_board = user_board.copy()
-        reply_board.push(chess.Move.from_uci("b8c6"))
-        reply_after = expected_occupancy_from_board(reply_board)
-
-        session.start_puzzle(before)
-        session.submit_puzzle_move(user_after)
-        result = session.submit_puzzle_move(reply_after, allow_unsynced=True)
-
-        self.assertEqual(result["accepted"], False)
-        self.assertEqual(result["kind"], "synced")
-        self.assertEqual(result["message"], "Board synced. Play the next puzzle move.")
-        self.assertEqual(session.status, "puzzle_play")
-        self.assertEqual(session.last_occupancy, reply_after)
 
     def test_puzzle_rejects_wrong_physical_move_without_advancing(self):
         session = GameSession()

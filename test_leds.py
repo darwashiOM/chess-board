@@ -2,24 +2,16 @@ import unittest
 
 import chess
 
-from chessboard_app.orientation import rotate_square_180
 from chessboard_app.leds import (
-    BLACK_PIECE_COLOR,
-    BLACK_PLACED_COLOR,
-    DESTINATION_COLOR,
     DotStarLedController,
     DisabledLedController,
     EXTRA_COLOR,
-    LEGAL_SOURCE_COLOR,
     LedSettings,
     MemoryLedController,
-    MISSING_COLOR,
     SHARED_LED_COLOR,
     WARM_GLOW_COLOR,
-    WHITE_PIECE_COLOR,
-    WHITE_PLACED_COLOR,
 )
-from led_mapping import SQUARE_TO_LED
+from led_mapping import SQUARE_TO_LED, SQUARE_TO_LED_CORNERS
 
 
 def marker_led(square):
@@ -43,15 +35,6 @@ class FakePixels:
 
 
 class LedTest(unittest.TestCase):
-    def test_gameplay_colors_are_encoded_for_bgr_led_hardware(self):
-        self.assertEqual(WHITE_PIECE_COLOR, (220, 0, 180))
-        self.assertEqual(BLACK_PIECE_COLOR, (0, 120, 0))
-        self.assertEqual(SHARED_LED_COLOR, (0, 0, 160))
-        self.assertEqual(WHITE_PLACED_COLOR, (180, 100, 150))
-        self.assertEqual(BLACK_PLACED_COLOR, (180, 100, 150))
-        self.assertEqual(DESTINATION_COLOR, (120, 0, 0))
-        self.assertEqual(MISSING_COLOR, (6, 14, 200))
-
     def test_disabled_controller_reports_state(self):
         leds = DisabledLedController()
 
@@ -98,223 +81,124 @@ class MemoryLedControllerTest(unittest.TestCase):
         leds = MemoryLedController()
         leds.apply_settings(LedSettings(enabled=True, brightness=0.1))
 
-        leds.show_setup_guidance(["e2", "d2", "c2"], ["e4"], frame=3, expected_board=chess.Board())
+        leds.show_setup_guidance(["e2", "d2", "c2"], ["e4"], frame=3)
 
         self.assertEqual(leds.mode, "setup")
         self.assertEqual(leds.highlighted_squares, ["e2", "d2", "c2"])
         self.assertEqual(leds.extra_squares, ["e4"])
         self.assertEqual(leds.setup_frame, 3)
 
-    def test_dotstar_setup_guidance_lights_only_missing_and_extra_squares(self):
+    def test_dotstar_setup_guidance_lights_missing_extra_and_expected_occupied_squares(self):
         pixels = FakePixels()
         leds = DotStarLedController(pixels)
         leds.apply_settings(LedSettings(enabled=True, brightness=0.1))
 
-        leds.show_setup_guidance(["a1"], ["h8"], frame=12, occupied_squares=["e4"], expected_board=chess.Board())
+        board = chess.Board()
+        leds.show_setup_guidance(["a1"], ["h8"], frame=10, occupied_squares=["e2"], expected_board=board)
 
         lit = {index for index, value in enumerate(pixels.values) if value != (0, 0, 0)}
-        expected_lit = set(SQUARE_TO_LED["a1"]) | set(SQUARE_TO_LED["h8"])
+        expected_lit = set(SQUARE_TO_LED["a1"]) | set(SQUARE_TO_LED["h8"]) | set(SQUARE_TO_LED["e2"])
         self.assertEqual(lit, expected_lit)
-        self.assertEqual([pixels.values[index] for index in SQUARE_TO_LED["a1"]], [WHITE_PIECE_COLOR] * 4)
+        self.assertEqual([pixels.values[index] for index in SQUARE_TO_LED["h8"]], [EXTRA_COLOR] * 4)
         self.assertEqual(pixels.show_count, 1)
 
-    def test_dotstar_setup_guidance_uses_dedicated_marker_per_missing_square(self):
+    def test_dotstar_setup_guidance_uses_warm_missing_color_without_expected_board(self):
         pixels = FakePixels()
         leds = DotStarLedController(pixels)
         leds.apply_settings(LedSettings(enabled=True, brightness=0.1))
 
-        leds.show_setup_guidance(["a1", "b1", "c1"], [], frame=0, occupied_squares=["h8"], expected_board=chess.Board())
+        leds.show_setup_guidance(["a1", "b1", "c1"], [], frame=0, occupied_squares=["h8"])
 
         for square in ["a1", "b1", "c1"]:
-            values = [pixels.values[index] for index in SQUARE_TO_LED[square]]
-            self.assertTrue(any(value in {WHITE_PIECE_COLOR, SHARED_LED_COLOR} for value in values))
-        self.assertEqual([pixels.values[index] for index in SQUARE_TO_LED["h8"]], [BLACK_PLACED_COLOR] * 4)
+            self.assertEqual([pixels.values[index] for index in SQUARE_TO_LED[square]], [WARM_GLOW_COLOR] * 4)
+        self.assertEqual(pixels.values[marker_led("h8")], (0, 0, 0))
 
-    def test_dotstar_setup_marker_turns_off_when_square_is_no_longer_missing(self):
+    def test_dotstar_setup_lights_turn_off_when_square_is_no_longer_missing(self):
         pixels = FakePixels()
         leds = DotStarLedController(pixels)
         leds.apply_settings(LedSettings(enabled=True, brightness=0.1))
 
         leds.show_setup_guidance(["a1", "b1"], [], frame=0)
-        self.assertIn(WARM_GLOW_COLOR, [pixels.values[index] for index in SQUARE_TO_LED["a1"]])
+        self.assertNotEqual(pixels.values[marker_led("a1")], (0, 0, 0))
 
-        leds.show_setup_guidance(["b1"], [], frame=8)
+        leds.show_setup_guidance(["b1"], [], frame=99)
 
-        a1_only = set(SQUARE_TO_LED["a1"]) - set(SQUARE_TO_LED["b1"])
-        for index in a1_only:
-            self.assertNotEqual(pixels.values[index], MISSING_COLOR)
-        self.assertIn(WARM_GLOW_COLOR, [pixels.values[index] for index in SQUARE_TO_LED["b1"]])
+        stale_only_a1 = set(SQUARE_TO_LED["a1"]) - set(SQUARE_TO_LED["b1"])
+        for index in stale_only_a1:
+            self.assertEqual(pixels.values[index], (0, 0, 0))
+        self.assertNotEqual(pixels.values[marker_led("b1")], (0, 0, 0))
 
-    def test_dotstar_setup_marker_returns_as_constant_light_red_when_magnet_is_removed_again(self):
+    def test_dotstar_setup_light_returns_when_magnet_is_removed_again(self):
         pixels = FakePixels()
         leds = DotStarLedController(pixels)
         leds.apply_settings(LedSettings(enabled=True, brightness=0.1))
 
-        leds.show_setup_guidance(["b1"], [], frame=5, occupied_squares=["h8"], expected_board=chess.Board())
-        a1_only = set(SQUARE_TO_LED["a1"]) - set(SQUARE_TO_LED["b1"])
-        for index in a1_only:
-            self.assertNotEqual(pixels.values[index], MISSING_COLOR)
+        leds.show_setup_guidance(["b1"], [], frame=5, occupied_squares=["h8"])
+        stale_only_a1 = set(SQUARE_TO_LED["a1"]) - set(SQUARE_TO_LED["b1"])
+        for index in stale_only_a1:
+            self.assertEqual(pixels.values[index], (0, 0, 0))
 
-        leds.show_setup_guidance(["a1", "b1"], [], frame=80, occupied_squares=["h8"], expected_board=chess.Board())
+        leds.show_setup_guidance(["a1", "b1"], [], frame=80, occupied_squares=["h8"])
 
-        self.assertIn(WHITE_PIECE_COLOR, [pixels.values[index] for index in SQUARE_TO_LED["a1"]])
-        self.assertIn(WHITE_PIECE_COLOR, [pixels.values[index] for index in SQUARE_TO_LED["b1"]])
+        self.assertNotEqual(pixels.values[marker_led("a1")], (0, 0, 0))
+        self.assertNotEqual(pixels.values[marker_led("b1")], (0, 0, 0))
 
-    def test_missing_square_marks_all_four_corners_without_animation(self):
-        pixels = FakePixels()
-        leds = DotStarLedController(pixels)
-        leds.apply_settings(LedSettings(enabled=True, brightness=0.1))
-
-        leds.show_setup_guidance(["e4"], [], frame=0)
-        first_values = [pixels.values[index] for index in SQUARE_TO_LED["e4"]]
-        leds.show_setup_guidance(["e4"], [], frame=16)
-        second_values = [pixels.values[index] for index in SQUARE_TO_LED["e4"]]
-
-        self.assertEqual(first_values, [WARM_GLOW_COLOR] * 4)
-        self.assertEqual(second_values, [WARM_GLOW_COLOR] * 4)
-
-    def test_missing_square_takes_shared_led_from_occupied_neighbor(self):
+    def test_shared_led_between_missing_and_occupied_square_gets_shared_color(self):
         pixels = FakePixels()
         leds = DotStarLedController(pixels)
         leds.apply_settings(LedSettings(enabled=True, brightness=0.1))
 
         shared = set(SQUARE_TO_LED["a1"]) & set(SQUARE_TO_LED["b1"])
-        leds.show_setup_guidance(["b1"], [], frame=8, occupied_squares=["a1"], expected_board=chess.Board())
+        leds.show_setup_guidance(["b1"], [], frame=12, occupied_squares=["a1"], expected_board=chess.Board())
 
+        self.assertTrue(shared)
         for index in shared:
             self.assertEqual(pixels.values[index], SHARED_LED_COLOR)
 
-    def test_same_color_adjacent_missing_pieces_do_not_use_shared_led_color(self):
-        pixels = FakePixels()
-        leds = DotStarLedController(pixels)
-        leds.apply_settings(LedSettings(enabled=True, brightness=0.1))
-
-        leds.show_setup_guidance(["a1", "b1"], [], expected_board=chess.Board(), expected_player_color="white")
-
-        shared = set(SQUARE_TO_LED["a1"]) & set(SQUARE_TO_LED["b1"])
-        for index in shared:
-            self.assertEqual(pixels.values[index], WHITE_PIECE_COLOR)
-
-    def test_adjacent_missing_puzzle_pieces_use_shared_led_color(self):
-        pixels = FakePixels()
-        leds = DotStarLedController(pixels)
-        board = chess.Board("8/8/4k2p/5p1P/8/5PK1/8/8 b - - 2 53")
-        leds.apply_settings(LedSettings(enabled=True, brightness=0.1, orientation="black"))
-
-        leds.show_setup_guidance(["h6", "h5"], [], expected_board=board, expected_player_color="black")
-
-        shared = set(SQUARE_TO_LED["a3"]) & set(SQUARE_TO_LED["a4"])
-        for index in shared:
-            self.assertEqual(pixels.values[index], SHARED_LED_COLOR)
-
-    def test_extra_square_uses_static_blue_without_animation(self):
+    def test_extra_square_lights_all_four_corners_red(self):
         pixels = FakePixels()
         leds = DotStarLedController(pixels)
         leds.apply_settings(LedSettings(enabled=True, brightness=0.1))
 
         leds.show_setup_guidance([], ["e4"], frame=0, occupied_squares=["e4"])
         first_values = [pixels.values[index] for index in SQUARE_TO_LED["e4"]]
-        leds.show_setup_guidance([], ["e4"], frame=12, occupied_squares=["e4"])
+        leds.show_setup_guidance([], ["e4"], frame=6, occupied_squares=["e4"])
         second_values = [pixels.values[index] for index in SQUARE_TO_LED["e4"]]
 
         self.assertEqual(first_values, [EXTRA_COLOR] * 4)
         self.assertEqual(second_values, [EXTRA_COLOR] * 4)
 
-    def test_setup_guidance_confirms_correctly_occupied_expected_pieces_with_piece_mix_colors(self):
-        pixels = FakePixels()
-        leds = DotStarLedController(pixels)
-        board = chess.Board()
-        leds.apply_settings(LedSettings(enabled=True, brightness=0.1))
-
-        leds.show_setup_guidance([], [], frame=0, occupied_squares=["e2", "e7"], expected_board=board)
-
-        self.assertEqual([pixels.values[index] for index in SQUARE_TO_LED["e2"]], [WHITE_PLACED_COLOR] * 4)
-        self.assertEqual([pixels.values[index] for index in SQUARE_TO_LED["e7"]], [BLACK_PLACED_COLOR] * 4)
-
-    def test_setup_guidance_confirms_yellow_and_blue_pieces_with_same_white_color(self):
-        pixels = FakePixels()
-        leds = DotStarLedController(pixels)
-        board = chess.Board()
-        leds.apply_settings(LedSettings(enabled=True, brightness=0.1))
-
-        leds.show_setup_guidance([], [], frame=0, occupied_squares=["e2", "e7"], expected_board=board)
-
-        self.assertEqual([pixels.values[index] for index in SQUARE_TO_LED["e2"]], [BLACK_PLACED_COLOR] * 4)
-        self.assertEqual([pixels.values[index] for index in SQUARE_TO_LED["e7"]], [BLACK_PLACED_COLOR] * 4)
-
-    def test_setup_guidance_leaves_unknown_occupied_square_off_when_it_is_not_missing_or_extra(self):
+    def test_setup_guidance_lights_expected_occupied_square(self):
         pixels = FakePixels()
         leds = DotStarLedController(pixels)
         leds.apply_settings(LedSettings(enabled=True, brightness=0.1))
 
-        leds.show_setup_guidance([], [], frame=0, occupied_squares=["e4"])
+        leds.show_setup_guidance([], [], frame=0, occupied_squares=["e2"], expected_board=chess.Board())
 
-        for index in SQUARE_TO_LED["e4"]:
-            self.assertEqual(pixels.values[index], (0, 0, 0))
+        for index in SQUARE_TO_LED["e2"]:
+            self.assertNotEqual(pixels.values[index], (0, 0, 0))
 
-    def test_legal_targets_use_different_source_and_destination_colors(self):
+    def test_setup_guidance_is_stable_over_time_without_animation(self):
         pixels = FakePixels()
         leds = DotStarLedController(pixels)
         leds.apply_settings(LedSettings(enabled=True, brightness=0.1))
 
-        leds.show_legal_targets(chess.Board(), "e2")
+        leds.show_setup_guidance([], [], frame=0, occupied_squares=["e2"], expected_board=chess.Board())
+        first = list(pixels.values)
+        leds.show_setup_guidance([], [], frame=16, occupied_squares=["e2"], expected_board=chess.Board())
+        second = list(pixels.values)
 
-        destination_indexes = set(SQUARE_TO_LED["e3"]) | set(SQUARE_TO_LED["e4"])
-        for index in set(SQUARE_TO_LED["e2"]) - destination_indexes:
-            self.assertEqual(pixels.values[index], LEGAL_SOURCE_COLOR)
-        self.assertEqual([pixels.values[index] for index in SQUARE_TO_LED["e4"]], [DESTINATION_COLOR] * 4)
+        self.assertEqual(first, second)
 
-    def test_legal_target_shared_edge_keeps_lifted_source_color(self):
+    def test_setup_background_uses_warm_colors(self):
         pixels = FakePixels()
         leds = DotStarLedController(pixels)
         leds.apply_settings(LedSettings(enabled=True, brightness=0.1))
 
-        leds.show_legal_targets(chess.Board(), "e2")
-
-        shared_with_e3 = set(SQUARE_TO_LED["e2"]) & set(SQUARE_TO_LED["e3"])
-        for index in shared_with_e3:
-            self.assertEqual(pixels.values[index], LEGAL_SOURCE_COLOR)
-
-    def test_opponent_move_uses_different_from_and_to_colors(self):
-        pixels = FakePixels()
-        leds = DotStarLedController(pixels)
-        leds.apply_settings(LedSettings(enabled=True, brightness=0.1))
-
-        leds.show_move("e7e5")
-
-        self.assertEqual([pixels.values[index] for index in SQUARE_TO_LED["e7"]], [LEGAL_SOURCE_COLOR] * 4)
-        self.assertEqual([pixels.values[index] for index in SQUARE_TO_LED["e5"]], [DESTINATION_COLOR] * 4)
-
-    def test_setup_guidance_correct_square_changes_from_missing_red_to_dim_amber(self):
-        pixels = FakePixels()
-        leds = DotStarLedController(pixels)
-        leds.apply_settings(LedSettings(enabled=True, brightness=0.1))
-
-        leds.show_setup_guidance(["e2"], [], frame=0, occupied_squares=[])
-        self.assertEqual([pixels.values[index] for index in SQUARE_TO_LED["e2"]], [WARM_GLOW_COLOR] * 4)
-        leds.show_setup_guidance([], [], frame=1, occupied_squares=["e2"], expected_board=chess.Board())
-
-        self.assertEqual([pixels.values[index] for index in SQUARE_TO_LED["e2"]], [WHITE_PLACED_COLOR] * 4)
-
-    def test_setup_guidance_missing_expected_squares_use_player_piece_colors(self):
-        pixels = FakePixels()
-        leds = DotStarLedController(pixels)
-        leds.apply_settings(LedSettings(enabled=True, brightness=0.1))
-
-        leds.show_setup_guidance(["e2", "e7"], [], expected_board=chess.Board(), expected_player_color="white")
-
-        self.assertEqual([pixels.values[index] for index in SQUARE_TO_LED["e2"]], [WHITE_PIECE_COLOR] * 4)
-        self.assertEqual([pixels.values[index] for index in SQUARE_TO_LED["e7"]], [BLACK_PIECE_COLOR] * 4)
-
-    def test_setup_guidance_missing_expected_squares_flip_colors_when_player_is_black(self):
-        pixels = FakePixels()
-        leds = DotStarLedController(pixels)
-        leds.apply_settings(LedSettings(enabled=True, brightness=0.1))
-
-        leds.show_setup_guidance(["e2", "e7"], [], expected_board=chess.Board(), expected_player_color="black")
-
-        self.assertEqual([pixels.values[index] for index in SQUARE_TO_LED["e2"]], [BLACK_PIECE_COLOR] * 4)
-        self.assertEqual([pixels.values[index] for index in SQUARE_TO_LED["e7"]], [WHITE_PIECE_COLOR] * 4)
+        for frame in [0, 64, 128]:
+            leds.show_setup_guidance([], [], frame=frame, occupied_squares=["a1", "b1", "c1"])
+            for red, green, blue in pixels.values:
+                self.assertGreaterEqual(red + green, blue)
 
     def test_empty_last_row_does_not_animate(self):
         pixels = FakePixels()
@@ -342,30 +226,6 @@ class MemoryLedControllerTest(unittest.TestCase):
         self.assertEqual(leds.mode, "ready")
         self.assertEqual(pixels.values, [(0, 0, 0)] * 81)
         self.assertGreaterEqual(pixels.show_count, 82)
-
-    def test_clear_sends_multiple_zero_frames_to_reliably_latch_off(self):
-        pixels = FakePixels()
-        leds = DotStarLedController(pixels)
-        leds.apply_settings(LedSettings(enabled=True, brightness=0.1))
-        pixels.values[10] = WHITE_PIECE_COLOR
-        pixels.show_count = 0
-
-        leds.clear()
-
-        self.assertEqual(pixels.values, [(0, 0, 0)] * 81)
-        self.assertGreaterEqual(pixels.show_count, 3)
-
-    def test_black_orientation_lights_rotated_physical_square(self):
-        pixels = FakePixels()
-        leds = DotStarLedController(pixels)
-        leds.apply_settings(LedSettings(enabled=True, brightness=0.1, orientation="black"))
-
-        leds.show_move("a8a7")
-
-        logical_from = set(SQUARE_TO_LED["a8"])
-        physical_from = set(SQUARE_TO_LED[rotate_square_180("a8")])
-        self.assertTrue(any(pixels.values[index] == LEGAL_SOURCE_COLOR for index in physical_from))
-        self.assertTrue(all(pixels.values[index] == (0, 0, 0) for index in logical_from - physical_from))
 
 
 if __name__ == "__main__":

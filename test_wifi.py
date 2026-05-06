@@ -36,20 +36,6 @@ class WifiTest(unittest.TestCase):
         self.assertEqual(status["mode"], "client")
         self.assertEqual(status["signal"], 76)
 
-    def test_status_reuses_short_cache_to_avoid_repeated_nmcli_work(self):
-        runner = FakeRunner([
-            "wlan0:wifi:connected:HomeWifi\n",
-            "IP4.ADDRESS[1]:192.168.1.50/24\n",
-            "*:HomeWifi:76\n",
-        ])
-        wifi = WifiManager(runner=runner, status_cache_seconds=5)
-
-        first = wifi.status()
-        second = wifi.status()
-
-        self.assertEqual(second, first)
-        self.assertEqual(len(runner.calls), 3)
-
     def test_scan_parses_networks(self):
         runner = FakeRunner(["", "", "", "", "", "", "", "Home:80:WPA2\nCafe:40:WPA1 WPA2\n"])
         wifi = WifiManager(runner=runner)

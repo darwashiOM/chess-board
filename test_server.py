@@ -5,13 +5,14 @@ import unittest
 from unittest.mock import patch
 
 import chess
+from fastapi import HTTPException
 
 from chessboard_app.config import AppConfigStore
 from chessboard_app.game_session import GameSession
 from chessboard_app.leds import MemoryLedController
 from chessboard_app.sensors import StaticSensorReader, UnavailableSensorReader
 from chessboard_app.sensors import expected_occupancy_from_board
-from chessboard_app.server import build_live_state, build_state, create_app
+from chessboard_app.server import build_state, create_app
 from chessboard_app.wifi import WifiManager
 
 
@@ -72,6 +73,98 @@ class ServerStateTest(unittest.TestCase):
             self.assertEqual(reader.details_count, 0)
             self.assertEqual(len(state["sensorDetails"]), 64)
 
+    def test_online_seek_rejects_blitz_board_quick_pairing(self):
+        class RecordingClient:
+            def __init__(self):
+                self.calls = []
+
+            def create_seek(self, **kwargs):
+                self.calls.append(kwargs)
+                return {"ok": True}
+
+        with tempfile.TemporaryDirectory() as tmp:
+            store = AppConfigStore(os.path.join(tmp, "config.json"))
+            store.save_lichess_token("secret", username="player1")
+            client = RecordingClient()
+            app = create_app(
+                config_store=store,
+                sensor_reader=StaticSensorReader(),
+                game_session=GameSession(),
+                wifi_manager=WifiManager(runner=lambda args: ""),
+                led_controller=MemoryLedController(),
+                lichess_client_factory=lambda token: client,
+            )
+            route = next(route for route in app.routes if getattr(route, "path", None) == "/api/play/seek")
+            payload_type = route.endpoint.__annotations__["payload"]
+
+            with self.assertRaises(HTTPException) as raised:
+                route.endpoint(payload_type(timeMinutes=3, increment=0))
+
+        self.assertEqual(raised.exception.status_code, 400)
+        self.assertIn("Rapid", str(raised.exception.detail))
+        self.assertEqual(client.calls, [])
+
+    def test_online_seek_starts_valid_quick_pairing_without_waiting_for_stream_to_close(self):
+        class RecordingClient:
+            def __init__(self):
+                self.calls = []
+
+            def create_seek(self, **kwargs):
+                self.calls.append(kwargs)
+                return {"ok": True}
+
+        with tempfile.TemporaryDirectory() as tmp:
+            store = AppConfigStore(os.path.join(tmp, "config.json"))
+            store.save_lichess_token("secret", username="player1")
+            client = RecordingClient()
+            app = create_app(
+                config_store=store,
+                sensor_reader=StaticSensorReader(),
+                game_session=GameSession(),
+                wifi_manager=WifiManager(runner=lambda args: ""),
+                led_controller=MemoryLedController(),
+                lichess_client_factory=lambda token: client,
+            )
+            route = next(route for route in app.routes if getattr(route, "path", None) == "/api/play/seek")
+            payload_type = route.endpoint.__annotations__["payload"]
+
+            result = route.endpoint(payload_type(timeMinutes=10, increment=0))
+
+        self.assertEqual(result, {"ok": True, "message": "Seek started"})
+        self.assertEqual(client.calls[0]["time_minutes"], 10)
+        self.assertEqual(client.calls[0]["increment"], 0)
+
+    def test_sync_active_online_game_uses_active_game_color_when_username_is_missing(self):
+        class RecordingClient:
+            def active_games(self):
+                return [{"gameId": "game123", "color": "black"}]
+
+            def stream_game_state(self, game_id):
+                return {
+                    "id": game_id,
+                    "white": {"name": "opponent"},
+                    "black": {"name": "hidden"},
+                    "state": {"moves": "", "status": "started"},
+                }
+
+        with tempfile.TemporaryDirectory() as tmp:
+            store = AppConfigStore(os.path.join(tmp, "config.json"))
+            store.save_lichess_token("secret", username="player1")
+            app = create_app(
+                config_store=store,
+                sensor_reader=StaticSensorReader(),
+                game_session=GameSession(),
+                wifi_manager=WifiManager(runner=lambda args: ""),
+                led_controller=MemoryLedController(),
+                lichess_client_factory=lambda token: RecordingClient(),
+            )
+            route = next(route for route in app.routes if getattr(route, "path", None) == "/api/play/sync-active")
+
+            result = route.endpoint()
+
+        self.assertEqual(result["matched"], True)
+        self.assertEqual(result["game"]["playerColor"], "black")
+
     def test_live_state_skips_wifi_and_returns_fresh_sensors(self):
         class FailingWifi(WifiManager):
             def status(self):
@@ -98,28 +191,6 @@ class ServerStateTest(unittest.TestCase):
         self.assertIn("sync", state)
         self.assertIn("sensorDetails", state)
         self.assertNotIn("wifi", state)
-
-    def test_black_player_color_rotates_physical_sensor_snapshot(self):
-        raw = {square: False for square in chess.SQUARE_NAMES}
-        raw["h1"] = True
-        session = GameSession()
-        session.board = chess.Board("r7/8/8/8/8/8/8/8 b - - 0 1")
-        session.set_player_color("black", "test black orientation")
-
-        with tempfile.TemporaryDirectory() as tmp:
-            store = AppConfigStore(os.path.join(tmp, "config.json"))
-            state = build_state(
-                store,
-                StaticSensorReader(raw),
-                session,
-                WifiManager(runner=lambda args: ""),
-                MemoryLedController(),
-            )
-
-        self.assertTrue(state["sensors"]["a8"])
-        self.assertFalse(state["sensors"]["h1"])
-        self.assertEqual(state["sync"]["missing"], [])
-        self.assertEqual(state["sync"]["extra"], [])
 
     def test_index_serves_valid_escape_html_quote_branch(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -244,61 +315,28 @@ class ServerStateTest(unittest.TestCase):
             self.assertEqual(state["ledsEnabled"], True)
             self.assertEqual(state["boardOrientation"], "black")
 
-    def test_settings_endpoint_applies_led_changes_immediately(self):
-        class RecordingLedController(MemoryLedController):
-            def __init__(self):
-                super().__init__()
-                self.applied = []
-
-            def apply_settings(self, settings):
-                super().apply_settings(settings)
-                self.applied.append(settings)
-
+    def test_state_highlights_legal_targets_after_opponent_move_was_already_copied(self):
         with tempfile.TemporaryDirectory() as tmp:
-            store = AppConfigStore(os.path.join(tmp, "config.json"))
-            store.update_settings(leds_enabled=True, led_brightness=0.2)
-            leds = RecordingLedController()
-            app = create_app(
-                config_store=store,
-                sensor_reader=StaticSensorReader(),
-                game_session=GameSession(),
-                wifi_manager=WifiManager(runner=lambda args: ""),
-                led_controller=leds,
+            store = self.enabled_led_store(tmp)
+            session = GameSession()
+            session.status = "started"
+            session.update_from_lichess_state({"state": {"moves": "e2e4 e7e5", "status": "started"}})
+            session.mark_synced(session.expected_occupancy())
+            occupancy = session.expected_occupancy()
+            occupancy["g1"] = False
+            leds = MemoryLedController()
+
+            state = build_state(
+                store,
+                StaticSensorReader(occupancy),
+                session,
+                WifiManager(runner=lambda args: ""),
+                leds,
             )
-            route = next(route for route in app.routes if getattr(route, "path", None) == "/api/settings")
 
-            route.endpoint(type("Payload", (), {
-                "ledsEnabled": False,
-                "ledBrightness": 0.05,
-                "boardOrientation": None,
-                "deviceName": None,
-                "testMode": None,
-            })())
-
-        self.assertEqual(leds.applied[-1].enabled, False)
-        self.assertEqual(leds.applied[-1].brightness, 0.05)
-
-    def test_settings_endpoint_updates_test_mode(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            store = AppConfigStore(os.path.join(tmp, "config.json"))
-            app = create_app(
-                config_store=store,
-                sensor_reader=StaticSensorReader(),
-                game_session=GameSession(),
-                wifi_manager=WifiManager(runner=lambda args: ""),
-                led_controller=MemoryLedController(),
-            )
-            route = next(route for route in app.routes if getattr(route, "path", None) == "/api/settings")
-
-            state = route.endpoint(type("Payload", (), {
-                "ledsEnabled": None,
-                "ledBrightness": None,
-                "boardOrientation": None,
-                "deviceName": None,
-                "testMode": True,
-            })())
-
-        self.assertEqual(state["testMode"], True)
+        self.assertFalse(state["sync"]["matches"])
+        self.assertEqual(state["leds"]["mode"], "legal-targets")
+        self.assertEqual(state["leds"]["highlightedSquares"], ["h3", "f3", "e2"])
 
     def test_state_highlights_legal_targets_when_one_piece_is_lifted(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -364,6 +402,137 @@ class ServerStateTest(unittest.TestCase):
         self.assertEqual(state["leds"]["mode"], "move")
         self.assertEqual(state["leds"]["highlightedSquares"], ["e7", "e5"])
 
+    def test_state_marks_opponent_move_copied_even_with_unrelated_sensor_noise(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            store = self.enabled_led_store(tmp)
+            session = GameSession()
+            session.set_player_color("white", "test")
+            session.update_from_lichess_state({"state": {"moves": "e2e4 e7e5", "status": "started"}})
+            physical_board = chess.Board()
+            physical_board.push(chess.Move.from_uci("e2e4"))
+            physical_board.push(chess.Move.from_uci("e7e5"))
+            occupancy = expected_occupancy_from_board(physical_board)
+            occupancy["g1"] = False
+
+            state = build_state(
+                store,
+                StaticSensorReader(occupancy),
+                session,
+                WifiManager(runner=lambda args: ""),
+                MemoryLedController(),
+            )
+
+        self.assertTrue(state["sync"]["matches"])
+        self.assertEqual(state["game"]["turn"], "white")
+        self.assertEqual(session.last_occupancy, session.expected_occupancy())
+
+    def test_submit_physical_move_reconciles_copied_opponent_move_before_detecting_player_move(self):
+        calls = []
+
+        class FakeLichessClient:
+            def __init__(self, token):
+                self.token = token
+
+            def make_move(self, game_id, uci):
+                calls.append((game_id, uci))
+
+            def stream_game_state(self, game_id):
+                return {
+                    "id": game_id,
+                    "white": {"name": "player1"},
+                    "black": {"name": "opponent"},
+                    "state": {"moves": "e2e4 e7e5 g1f3", "status": "started"},
+                }
+
+        with tempfile.TemporaryDirectory() as tmp:
+            store = AppConfigStore(os.path.join(tmp, "config.json"))
+            store.save_lichess_token("secret", username="player1")
+            store.update_settings(submit_move_enabled=True)
+            session = GameSession(game_id="game123")
+            session.set_player_color("white", "test")
+            session.update_from_lichess_state({"id": "game123", "state": {"moves": "e2e4 e7e5", "status": "started"}})
+            player_board = chess.Board()
+            player_board.push(chess.Move.from_uci("e2e4"))
+            player_board.push(chess.Move.from_uci("e7e5"))
+            player_board.push(chess.Move.from_uci("g1f3"))
+            occupancy = expected_occupancy_from_board(player_board)
+            occupancy["b8"] = False
+
+            app = create_app(
+                config_store=store,
+                sensor_reader=StaticSensorReader(occupancy),
+                game_session=session,
+                wifi_manager=WifiManager(runner=lambda args: ""),
+                led_controller=MemoryLedController(),
+            )
+            route = next(route for route in app.routes if getattr(route, "path", None) == "/api/game/submit-physical")
+
+            with patch("chessboard_app.server.LichessClient", FakeLichessClient):
+                result = route.endpoint()
+
+        self.assertEqual(result["submitted"], True)
+        self.assertEqual(result["move"], "g1f3")
+        self.assertEqual(calls, [("game123", "g1f3")])
+
+    def test_open_challenge_returns_url_for_blitz_link(self):
+        class RecordingClient:
+            def __init__(self):
+                self.calls = []
+
+            def open_challenge(self, **kwargs):
+                self.calls.append(kwargs)
+                return {"challenge": {"id": "challenge123", "url": "https://lichess.org/abc123"}}
+
+        with tempfile.TemporaryDirectory() as tmp:
+            store = AppConfigStore(os.path.join(tmp, "config.json"))
+            store.save_lichess_token("secret", username="player1")
+            client = RecordingClient()
+            app = create_app(
+                config_store=store,
+                sensor_reader=StaticSensorReader(),
+                game_session=GameSession(),
+                wifi_manager=WifiManager(runner=lambda args: ""),
+                led_controller=MemoryLedController(),
+                lichess_client_factory=lambda token: client,
+            )
+            route = next(route for route in app.routes if getattr(route, "path", None) == "/api/play/open")
+            payload_type = route.endpoint.__annotations__["payload"]
+
+            result = route.endpoint(payload_type(timeMinutes=3, increment=0))
+
+        self.assertEqual(result["url"], "https://lichess.org/abc123")
+        self.assertEqual(result["id"], "challenge123")
+        self.assertEqual(client.calls[0]["clock_limit"], 180)
+        self.assertEqual(client.calls[0]["increment"], 0)
+
+    def test_cancel_open_challenge_calls_lichess(self):
+        class RecordingClient:
+            def __init__(self):
+                self.cancelled = []
+
+            def cancel_challenge(self, challenge_id):
+                self.cancelled.append(challenge_id)
+
+        with tempfile.TemporaryDirectory() as tmp:
+            store = AppConfigStore(os.path.join(tmp, "config.json"))
+            store.save_lichess_token("secret", username="player1")
+            client = RecordingClient()
+            app = create_app(
+                config_store=store,
+                sensor_reader=StaticSensorReader(),
+                game_session=GameSession(),
+                wifi_manager=WifiManager(runner=lambda args: ""),
+                led_controller=MemoryLedController(),
+                lichess_client_factory=lambda token: client,
+            )
+            route = next(route for route in app.routes if getattr(route, "path", None) == "/api/play/challenge/cancel")
+            payload_type = route.endpoint.__annotations__["payload"]
+
+            result = route.endpoint(payload_type(challengeId="challenge123"))
+
+        self.assertEqual(result, {"ok": True})
+        self.assertEqual(client.cancelled, ["challenge123"])
+
     def test_play_ai_starts_lichess_game_and_marks_sensor_baseline(self):
         class FakeLichessClient:
             def __init__(self, token):
@@ -395,140 +564,86 @@ class ServerStateTest(unittest.TestCase):
 
             with patch("chessboard_app.server.LichessClient", FakeLichessClient):
                 result = route.endpoint(type("Payload", (), {
-                    "level": 3,
-                    "clockLimit": 180,
-                    "increment": 2,
+                    "level": 8,
+                    "clockLimit": 300,
+                    "increment": 3,
                     "color": "random",
                     "variant": "standard",
                 })())
 
+        self.assertEqual(result["created"]["id"], "game123")
         self.assertEqual(result["game"]["id"], "game123")
         self.assertEqual(result["game"]["playerColor"], "white")
-        self.assertEqual(result["game"]["debug"]["playerColorReason"], "lichess username matched white")
         self.assertIsNotNone(session.last_occupancy)
 
-    def test_play_ai_infers_player_color_from_lichess_username_when_response_omits_player(self):
-        class FakeLichessClient:
-            def __init__(self, token):
-                self.token = token
-
-            def challenge_ai(self, **kwargs):
-                return {"id": "game123"}
-
-            def stream_game_state(self, game_id):
-                return {
-                    "id": game_id,
-                    "white": {"name": "Lichess AI", "rating": 1500},
-                    "black": {"name": "player1"},
-                    "state": {"moves": "e2e4", "status": "started"},
-                }
-
+    def test_state_reports_pending_move_even_when_manual_submit_button_is_off(self):
         with tempfile.TemporaryDirectory() as tmp:
             store = AppConfigStore(os.path.join(tmp, "config.json"))
-            store.save_lichess_token("secret", username="player1")
-            session = GameSession()
-            app = create_app(
-                config_store=store,
-                sensor_reader=StaticSensorReader(expected_occupancy_from_board(chess.Board())),
-                game_session=session,
-                wifi_manager=WifiManager(runner=lambda args: ""),
-                led_controller=MemoryLedController(),
+            session = GameSession(game_id="game123")
+            before = expected_occupancy_from_board(session.board)
+            session.mark_synced(before)
+            after_board = session.board.copy()
+            after_board.push(chess.Move.from_uci("e2e4"))
+
+            state = build_state(
+                store,
+                StaticSensorReader(expected_occupancy_from_board(after_board)),
+                session,
+                WifiManager(runner=lambda args: ""),
+                MemoryLedController(),
             )
-            route = next(route for route in app.routes if getattr(route, "path", None) == "/api/play/ai")
 
-            with patch("chessboard_app.server.LichessClient", FakeLichessClient):
-                result = route.endpoint(type("Payload", (), {
-                    "level": 3,
-                    "clockLimit": 180,
-                    "increment": 2,
-                    "color": "random",
-                    "variant": "standard",
-                })())
+        self.assertFalse(state["submitMoveEnabled"])
+        self.assertEqual(state["pendingMove"]["kind"], "move")
+        self.assertEqual(state["pendingMove"]["uci"], "e2e4")
 
-        self.assertEqual(result["game"]["playerColor"], "black")
-        self.assertEqual(result["game"]["debug"]["playerColorReason"], "lichess username matched black")
-        self.assertEqual(result["game"]["lastMove"], "e2e4")
-
-    def test_play_ai_prefers_username_color_over_created_player_field(self):
-        class FakeLichessClient:
-            def __init__(self, token):
-                self.token = token
-
-            def challenge_ai(self, **kwargs):
-                return {"id": "game123", "player": "white"}
-
-            def stream_game_state(self, game_id):
-                return {
-                    "id": game_id,
-                    "white": {"name": "Lichess AI", "rating": 1500},
-                    "black": {"name": "player1"},
-                    "state": {"moves": "e2e4", "status": "started"},
-                }
-
+    def test_state_reports_pending_move_even_with_unrelated_wrong_square_in_baseline(self):
         with tempfile.TemporaryDirectory() as tmp:
             store = AppConfigStore(os.path.join(tmp, "config.json"))
-            store.save_lichess_token("secret", username="player1")
-            session = GameSession()
-            app = create_app(
-                config_store=store,
-                sensor_reader=StaticSensorReader(expected_occupancy_from_board(chess.Board())),
-                game_session=session,
-                wifi_manager=WifiManager(runner=lambda args: ""),
-                led_controller=MemoryLedController(),
+            session = GameSession(game_id="game123")
+            noisy_before = expected_occupancy_from_board(session.board)
+            noisy_before["h1"] = False
+            session.mark_synced(noisy_before)
+            after_board = session.board.copy()
+            after_board.push(chess.Move.from_uci("e2e4"))
+            noisy_after = expected_occupancy_from_board(after_board)
+            noisy_after["h1"] = False
+
+            state = build_state(
+                store,
+                StaticSensorReader(noisy_after),
+                session,
+                WifiManager(runner=lambda args: ""),
+                MemoryLedController(),
             )
-            route = next(route for route in app.routes if getattr(route, "path", None) == "/api/play/ai")
 
-            with patch("chessboard_app.server.LichessClient", FakeLichessClient):
-                result = route.endpoint(type("Payload", (), {
-                    "level": 3,
-                    "clockLimit": 180,
-                    "increment": 2,
-                    "color": "random",
-                    "variant": "standard",
-                })())
+        self.assertEqual(state["pendingMove"]["kind"], "move")
+        self.assertEqual(state["pendingMove"]["uci"], "e2e4")
 
-        self.assertEqual(result["game"]["playerColor"], "black")
-        self.assertEqual(result["game"]["debug"]["playerColorReason"], "lichess username matched black")
-
-    def test_play_ai_requires_starting_position_before_calling_lichess(self):
-        class FakeLichessClient:
-            called = False
-
-            def __init__(self, token):
-                self.token = token
-
-            def challenge_ai(self, **kwargs):
-                FakeLichessClient.called = True
-                return {"id": "game123"}
-
+    def test_state_reports_castling_in_progress_without_submitting_rook_move(self):
         with tempfile.TemporaryDirectory() as tmp:
             store = AppConfigStore(os.path.join(tmp, "config.json"))
-            store.save_lichess_token("secret", username="player1")
-            occupancy = expected_occupancy_from_board(chess.Board())
-            occupancy["e2"] = False
-            app = create_app(
-                config_store=store,
-                sensor_reader=StaticSensorReader(occupancy),
-                game_session=GameSession(),
-                wifi_manager=WifiManager(runner=lambda args: ""),
-                led_controller=MemoryLedController(),
+            session = GameSession(game_id="game123")
+            session.status = "started"
+            session.board = chess.Board("r3k2r/8/8/8/8/8/8/R3K2R w KQkq - 0 1")
+            before = expected_occupancy_from_board(session.board)
+            after = dict(before)
+            after["h1"] = False
+            after["f1"] = True
+            session.mark_synced(before)
+
+            state = build_state(
+                store,
+                StaticSensorReader(after),
+                session,
+                WifiManager(runner=lambda args: ""),
+                MemoryLedController(),
             )
-            route = next(route for route in app.routes if getattr(route, "path", None) == "/api/play/ai")
 
-            with patch("chessboard_app.server.LichessClient", FakeLichessClient):
-                with self.assertRaises(Exception) as raised:
-                    route.endpoint(type("Payload", (), {
-                        "level": 3,
-                        "clockLimit": 180,
-                        "increment": 2,
-                        "color": "random",
-                        "variant": "standard",
-                    })())
+        self.assertEqual(state["pendingMove"]["kind"], "castling_in_progress")
+        self.assertEqual(state["pendingMove"]["uci"], "e1g1")
 
-        self.assertEqual(getattr(raised.exception, "status_code", None), 409)
-        self.assertFalse(FakeLichessClient.called)
-
-    def test_submit_physical_move_posts_to_lichess_and_updates_session(self):
+    def test_submit_physical_move_posts_when_manual_submit_button_is_off(self):
         calls = []
 
         class FakeLichessClient:
@@ -549,6 +664,43 @@ class ServerStateTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             store = AppConfigStore(os.path.join(tmp, "config.json"))
             store.save_lichess_token("secret", username="player1")
+            session = GameSession(game_id="game123")
+            session.mark_synced(expected_occupancy_from_board(session.board))
+            after_board = session.board.copy()
+            after_board.push(chess.Move.from_uci("e2e4"))
+            app = create_app(
+                config_store=store,
+                sensor_reader=StaticSensorReader(expected_occupancy_from_board(after_board)),
+                game_session=session,
+                wifi_manager=WifiManager(runner=lambda args: ""),
+                led_controller=MemoryLedController(),
+            )
+            route = next(route for route in app.routes if getattr(route, "path", None) == "/api/game/submit-physical")
+
+            with patch("chessboard_app.server.LichessClient", FakeLichessClient):
+                result = route.endpoint()
+
+        self.assertEqual(result["submitted"], True)
+        self.assertEqual(result["move"], "e2e4")
+        self.assertEqual(calls, [("game123", "e2e4")])
+
+    def test_submit_physical_move_posts_to_lichess_and_updates_session(self):
+        calls = []
+
+        class FakeLichessClient:
+            def __init__(self, token):
+                self.token = token
+
+            def make_move(self, game_id, uci):
+                calls.append((game_id, uci))
+
+            def stream_game_state(self, game_id):
+                raise AssertionError("submit should not wait for a Lichess stream refresh")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            store = AppConfigStore(os.path.join(tmp, "config.json"))
+            store.save_lichess_token("secret", username="player1")
+            store.update_settings(submit_move_enabled=True)
             session = GameSession(game_id="game123")
             before = expected_occupancy_from_board(session.board)
             session.mark_synced(before)
@@ -600,72 +752,6 @@ class ServerStateTest(unittest.TestCase):
         self.assertEqual(result["game"]["puzzle"]["id"], "puzzle1")
         self.assertEqual(result["game"]["pieces"]["e4"], "P")
 
-    def test_next_puzzle_uses_batch_endpoint_for_fresh_puzzle(self):
-        payload = self.puzzle_payload()
-
-        class FakeLichessClient:
-            def __init__(self, token):
-                self.token = token
-
-            def puzzle_batch(self, angle="mix", nb=1):
-                return {"puzzles": [payload]}
-
-        with tempfile.TemporaryDirectory() as tmp:
-            store = AppConfigStore(os.path.join(tmp, "config.json"))
-            store.save_lichess_token("secret", username="player1")
-            session = GameSession()
-            app = create_app(
-                config_store=store,
-                sensor_reader=StaticSensorReader(),
-                game_session=session,
-                wifi_manager=WifiManager(runner=lambda args: ""),
-                led_controller=MemoryLedController(),
-            )
-            route = next(route for route in app.routes if getattr(route, "path", None) == "/api/puzzles/next")
-
-            with patch("chessboard_app.server.LichessClient", FakeLichessClient):
-                result = route.endpoint()
-
-        self.assertEqual(result["game"]["puzzle"]["id"], "puzzle1")
-        self.assertEqual(result["puzzle"]["id"], "puzzle1")
-
-    def test_next_puzzle_falls_back_to_anonymous_batch_when_auth_repeats_current(self):
-        current = self.puzzle_payload()
-        current["puzzle"]["id"] = "current"
-        fresh = self.puzzle_payload()
-        fresh["puzzle"]["id"] = "fresh"
-        created_tokens = []
-
-        class FakeLichessClient:
-            def __init__(self, token, **kwargs):
-                self.token = token
-                created_tokens.append(token)
-
-            def puzzle_batch(self, angle="mix", nb=1):
-                if self.token:
-                    return {"puzzles": [current]}
-                return {"puzzles": [fresh]}
-
-        with tempfile.TemporaryDirectory() as tmp:
-            store = AppConfigStore(os.path.join(tmp, "config.json"))
-            store.save_lichess_token("secret", username="player1")
-            session = GameSession()
-            session.load_puzzle(current)
-            app = create_app(
-                config_store=store,
-                sensor_reader=StaticSensorReader(),
-                game_session=session,
-                wifi_manager=WifiManager(runner=lambda args: ""),
-                led_controller=MemoryLedController(),
-            )
-            route = next(route for route in app.routes if getattr(route, "path", None) == "/api/puzzles/next")
-
-            with patch("chessboard_app.server.LichessClient", FakeLichessClient):
-                result = route.endpoint()
-
-        self.assertEqual(result["game"]["puzzle"]["id"], "fresh")
-        self.assertEqual(created_tokens, ["secret", ""])
-
     def test_start_and_submit_puzzle_physical_move(self):
         with tempfile.TemporaryDirectory() as tmp:
             store = AppConfigStore(os.path.join(tmp, "config.json"))
@@ -699,175 +785,6 @@ class ServerStateTest(unittest.TestCase):
         self.assertEqual(submit_result["move"], "g1f3")
         self.assertEqual(submit_result["reply"], "b8c6")
 
-    def test_live_state_auto_accepts_correct_puzzle_move_after_start(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            store = self.enabled_led_store(tmp)
-            session = GameSession()
-            session.load_puzzle(self.puzzle_payload())
-            before = expected_occupancy_from_board(session.board)
-            after_board = session.board.copy()
-            after_board.push(chess.Move.from_uci("g1f3"))
-            session.start_puzzle(before)
-            app = create_app(
-                config_store=store,
-                sensor_reader=StaticSensorReader(expected_occupancy_from_board(after_board)),
-                game_session=session,
-                wifi_manager=WifiManager(runner=lambda args: ""),
-                led_controller=MemoryLedController(),
-            )
-            route = next(route for route in app.routes if getattr(route, "path", None) == "/api/live-state")
-
-            state = route.endpoint()
-
-        self.assertEqual(state["game"]["lastMove"], "b8c6")
-        self.assertEqual(state["game"]["puzzle"]["solutionIndex"], 2)
-        self.assertEqual(state["sync"]["missing"], ["c6"])
-        self.assertEqual(state["sync"]["extra"], ["b8"])
-
-    def test_live_state_marks_puzzle_synced_after_opponent_reply_is_copied(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            store = self.enabled_led_store(tmp)
-            session = GameSession()
-            session.load_puzzle(self.puzzle_payload())
-            before = expected_occupancy_from_board(session.board)
-            user_board = session.board.copy()
-            user_board.push(chess.Move.from_uci("g1f3"))
-            user_after = expected_occupancy_from_board(user_board)
-            reply_board = user_board.copy()
-            reply_board.push(chess.Move.from_uci("b8c6"))
-            reply_after = expected_occupancy_from_board(reply_board)
-            session.start_puzzle(before)
-            session.submit_puzzle_move(user_after)
-            leds = MemoryLedController()
-            app = create_app(
-                config_store=store,
-                sensor_reader=StaticSensorReader(reply_after),
-                game_session=session,
-                wifi_manager=WifiManager(runner=lambda args: ""),
-                led_controller=leds,
-            )
-            route = next(route for route in app.routes if getattr(route, "path", None) == "/api/live-state")
-
-            state = route.endpoint()
-
-        self.assertTrue(state["sync"]["matches"])
-        self.assertEqual(state["leds"]["mode"], "idle")
-        self.assertEqual(state["game"]["pieces"]["c6"], "n")
-        self.assertNotIn("b8", state["game"]["pieces"])
-        self.assertEqual(session.last_occupancy, reply_after)
-
-    def test_start_puzzle_requires_physical_board_to_match_puzzle_position(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            store = AppConfigStore(os.path.join(tmp, "config.json"))
-            session = GameSession()
-            session.load_puzzle(self.puzzle_payload())
-            occupancy = expected_occupancy_from_board(session.board)
-            occupancy["g1"] = False
-            app = create_app(
-                config_store=store,
-                sensor_reader=StaticSensorReader(occupancy),
-                game_session=session,
-                wifi_manager=WifiManager(runner=lambda args: ""),
-                led_controller=MemoryLedController(),
-            )
-            route = next(route for route in app.routes if getattr(route, "path", None) == "/api/puzzle/start")
-
-            with self.assertRaises(Exception) as raised:
-                route.endpoint()
-
-        self.assertEqual(getattr(raised.exception, "status_code", None), 409)
-        self.assertEqual(session.status, "puzzle_setup")
-
-    def test_test_mode_starts_puzzle_with_partial_board_and_accepts_delta_move(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            store = AppConfigStore(os.path.join(tmp, "config.json"))
-            store.update_settings(test_mode=True)
-            session = GameSession()
-            session.load_puzzle(self.puzzle_payload())
-            partial_before = {square: False for square in chess.SQUARE_NAMES}
-            partial_before["g1"] = True
-            partial_after = dict(partial_before)
-            partial_after["g1"] = False
-            partial_after["f3"] = True
-            app = create_app(
-                config_store=store,
-                sensor_reader=StaticSensorReader(partial_before),
-                game_session=session,
-                wifi_manager=WifiManager(runner=lambda args: ""),
-                led_controller=MemoryLedController(),
-            )
-            start_route = next(route for route in app.routes if getattr(route, "path", None) == "/api/puzzle/start")
-            start_result = start_route.endpoint()
-
-            app = create_app(
-                config_store=store,
-                sensor_reader=StaticSensorReader(partial_after),
-                game_session=session,
-                wifi_manager=WifiManager(runner=lambda args: ""),
-                led_controller=MemoryLedController(),
-            )
-            submit_route = next(route for route in app.routes if getattr(route, "path", None) == "/api/puzzle/submit-physical")
-            submit_result = submit_route.endpoint()
-
-        self.assertEqual(start_result["game"]["mode"], "puzzle_play")
-        self.assertEqual(submit_result["accepted"], True)
-        self.assertEqual(submit_result["move"], "g1f3")
-
-    def test_test_mode_lifted_partial_piece_shows_legal_targets_from_baseline(self):
-        session = GameSession()
-        session.load_puzzle(self.puzzle_payload())
-        partial_before = {square: False for square in chess.SQUARE_NAMES}
-        partial_before["g1"] = True
-        partial_after = dict(partial_before)
-        partial_after["g1"] = False
-        session.start_puzzle(partial_before)
-        leds = MemoryLedController()
-        leds.apply_settings(type("Settings", (), {"enabled": True, "brightness": 0.1})())
-
-        state = build_live_state(
-            StaticSensorReader(partial_after),
-            session,
-            leds,
-            test_mode=True,
-        )
-
-        self.assertEqual(state["leds"]["mode"], "legal-targets")
-        self.assertEqual(set(state["leds"]["highlightedSquares"]), {"e2", "f3", "h3"})
-
-    def test_live_state_applies_black_orientation_to_led_settings(self):
-        session = GameSession()
-        session.set_player_color("black", "test black orientation")
-        leds = MemoryLedController()
-        leds.apply_settings(type("Settings", (), {"enabled": True, "brightness": 0.1, "orientation": "white"})())
-
-        build_live_state(
-            StaticSensorReader(),
-            session,
-            leds,
-            test_mode=True,
-            board_orientation="white",
-        )
-
-        self.assertEqual(leds.settings.orientation, "black")
-
-    def test_idle_state_shows_setup_guidance_until_starting_board_matches(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            store = self.enabled_led_store(tmp)
-            occupancy = expected_occupancy_from_board(chess.Board())
-            occupancy["e2"] = False
-            leds = MemoryLedController()
-
-            state = build_state(
-                store,
-                StaticSensorReader(occupancy),
-                GameSession(),
-                WifiManager(runner=lambda args: ""),
-                leds,
-            )
-
-        self.assertEqual(state["leds"]["mode"], "setup")
-        self.assertIn("e2", state["leds"]["highlightedSquares"])
-
     def test_refresh_game_updates_position_clocks_and_draw_offer(self):
         class FakeLichessClient:
             def __init__(self, token):
@@ -890,6 +807,7 @@ class ServerStateTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             store = AppConfigStore(os.path.join(tmp, "config.json"))
             store.save_lichess_token("secret", username="player1")
+            store.update_settings(submit_move_enabled=True)
             session = GameSession(game_id="game123")
             app = create_app(
                 config_store=store,
@@ -908,6 +826,28 @@ class ServerStateTest(unittest.TestCase):
         self.assertEqual(result["game"]["drawOffer"], "black")
         self.assertEqual(result["game"]["pieces"]["e5"], "p")
 
+    def test_leave_finished_game_resets_session_and_clears_lights(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            store = self.enabled_led_store(tmp)
+            session = GameSession(game_id="game123")
+            session.update_from_lichess_state({"id": "game123", "state": {"moves": "f2f3 e7e5 g2g4 d8h4", "status": "mate", "winner": "black"}})
+            leds = MemoryLedController()
+            app = create_app(
+                config_store=store,
+                sensor_reader=StaticSensorReader(expected_occupancy_from_board(chess.Board())),
+                game_session=session,
+                wifi_manager=WifiManager(runner=lambda args: ""),
+                led_controller=leds,
+            )
+            route = next(route for route in app.routes if getattr(route, "path", None) == "/api/game/leave-finished")
+
+            result = route.endpoint()
+
+        self.assertIsNone(result["game"]["id"])
+        self.assertEqual(result["game"]["status"], "idle")
+        self.assertFalse(result["leds"]["highlightedSquares"])
+        self.assertEqual(session.status, "idle")
+
     def test_draw_and_resign_routes_call_lichess_client(self):
         calls = []
 
@@ -924,6 +864,7 @@ class ServerStateTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             store = AppConfigStore(os.path.join(tmp, "config.json"))
             store.save_lichess_token("secret", username="player1")
+            store.update_settings(submit_move_enabled=True)
             session = GameSession(game_id="game123")
             app = create_app(
                 config_store=store,

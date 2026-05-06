@@ -43,4 +43,3 @@ Add a full puzzle mode for the physical board: fetch a Lichess puzzle, show the 
 - A wrong physical move is rejected with a clear message and does not advance.
 - An opponent reply is applied and highlighted with the existing LED move mode.
 - Completed puzzle state is visible on screen.
-

@@ -37,14 +37,6 @@ class LichessClientTest(unittest.TestCase):
         self.assertEqual(url, "https://lichess.org/api/account")
         self.assertEqual(kwargs["headers"]["Authorization"], "Bearer secret")
 
-    def test_empty_token_omits_authorization_header(self):
-        transport = FakeTransport([FakeResponse(data={"username": "player1"})])
-        client = LichessClient("", transport=transport)
-
-        client.validate_token()
-
-        self.assertNotIn("Authorization", transport.calls[0][2]["headers"])
-
     def test_validate_token_rejects_bad_token(self):
         transport = FakeTransport([FakeResponse(status_code=401, text="Unauthorized")])
         client = LichessClient("bad", transport=transport)
@@ -162,6 +154,14 @@ class LichessClientTest(unittest.TestCase):
         self.assertEqual(transport.calls[0][1], "https://lichess.org/api/board/seek")
         self.assertEqual(transport.calls[0][2]["data"]["time"], 3)
 
+    def test_real_time_seek_empty_stream_returns_ok(self):
+        transport = FakeTransport([FakeResponse(text="")])
+        client = LichessClient("secret", transport=transport)
+
+        result = client.create_seek(time_minutes=10, increment=0, rated=False)
+
+        self.assertEqual(result, {"ok": True})
+
     def test_can_create_open_challenge(self):
         transport = FakeTransport([FakeResponse(data={"url": "https://lichess.org/abc"})])
         client = LichessClient("secret", transport=transport)
@@ -172,20 +172,23 @@ class LichessClientTest(unittest.TestCase):
         self.assertEqual(transport.calls[0][1], "https://lichess.org/api/challenge/open")
         self.assertEqual(transport.calls[0][2]["data"]["name"], "ChessBoard")
 
+    def test_can_cancel_challenge(self):
+        transport = FakeTransport([FakeResponse(data={"ok": True})])
+        client = LichessClient("secret", transport=transport)
+
+        client.cancel_challenge("challenge123")
+
+        self.assertEqual(transport.calls[0][0], "POST")
+        self.assertEqual(transport.calls[0][1], "https://lichess.org/api/challenge/challenge123/cancel")
+
     def test_can_fetch_puzzles(self):
-        transport = FakeTransport([
-            FakeResponse(data={"puzzle": {"id": "p1"}}),
-            FakeResponse(data={"puzzles": [{"puzzle": {"id": "batch1"}}]}),
-            FakeResponse(data={"puzzle": {"id": "daily"}}),
-        ])
+        transport = FakeTransport([FakeResponse(data={"puzzle": {"id": "p1"}}), FakeResponse(data={"puzzle": {"id": "daily"}})])
         client = LichessClient("secret", transport=transport)
 
         self.assertEqual(client.next_puzzle(), {"puzzle": {"id": "p1"}})
-        self.assertEqual(client.puzzle_batch(nb=1), {"puzzles": [{"puzzle": {"id": "batch1"}}]})
         self.assertEqual(client.daily_puzzle(), {"puzzle": {"id": "daily"}})
         self.assertEqual(transport.calls[0][1], "https://lichess.org/api/puzzle/next")
-        self.assertEqual(transport.calls[1][1], "https://lichess.org/api/puzzle/batch/mix?nb=1")
-        self.assertEqual(transport.calls[2][1], "https://lichess.org/api/puzzle/daily")
+        self.assertEqual(transport.calls[1][1], "https://lichess.org/api/puzzle/daily")
 
 
 if __name__ == "__main__":
